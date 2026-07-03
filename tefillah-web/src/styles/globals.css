@@ -1,0 +1,208 @@
+@import "tailwindcss";
+
+/*
+ * Tefillah web design system.
+ * NOTE: reconstructed after the original was lost in a crash — token VALUES are a
+ * best-effort match to the brand (dark, gold accent) and may need fine-tuning, but
+ * every custom property and utility class the app references is defined here.
+ * Tailwind v4 (via @tailwindcss/vite). Theme switches on <html data-theme="…">.
+ */
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+}
+
+/* ---- Light theme (default) ---- */
+:root,
+[data-theme='light'] {
+  --color-bg: #f6f4ef;
+  --color-bg-elev: #ffffff;
+  --color-surface: #ffffff;
+  --color-text: #1c1b29;
+  --color-text-secondary: #55505f;
+  --color-text-muted: #8b8794;
+  --color-border: #e7e3da;
+  --color-border-strong: #d6d0c4;
+  --color-accent: #b8892b;
+  --color-accent-glow: rgba(184, 137, 43, 0.14);
+  --color-success: #2e7d4f;
+  --color-warning: #b0781a;
+  --color-error: #c0392b;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+
+  --radius-md: 14px;
+  --shadow-md: 0 6px 24px rgba(20, 18, 30, 0.08);
+  --shadow-glow: 0 0 30px rgba(184, 137, 43, 0.18);
+
+  --logo-disc-outer: #d4af37;
+  --logo-disc-inner: #1a1a2e;
+  --logo-flame: #d4af37;
+  --logo-flame-droplet: #f0d97a;
+}
+
+/* ---- Dark theme ---- */
+[data-theme='dark'] {
+  --color-bg: #0f0f1a;
+  --color-bg-elev: #16162a;
+  --color-surface: #1a1a2e;
+  --color-text: #f4f3f7;
+  --color-text-secondary: #c3c1d0;
+  --color-text-muted: #8a8798;
+  --color-border: #2a2a40;
+  --color-border-strong: #3b3b57;
+  --color-accent: #d4af37;
+  --color-accent-glow: rgba(212, 175, 55, 0.18);
+  --color-success: #4caf72;
+  --color-warning: #e0a638;
+  --color-error: #ef5350;
+
+  --shadow-md: 0 8px 30px rgba(0, 0, 0, 0.4);
+  --shadow-glow: 0 0 34px rgba(212, 175, 55, 0.22);
+
+  --logo-disc-outer: #d4af37;
+  --logo-disc-inner: #0f0f1a;
+  --logo-flame: #d4af37;
+  --logo-flame-droplet: #f0d97a;
+}
+
+html {
+  background: var(--color-bg);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tailwind v4 maps `.font-serif` to --font-serif automatically; this is a safety net. */
+.font-serif {
+  font-family: var(--font-serif);
+}
+
+@layer components {
+  .surface-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: var(--color-accent);
+    color: #0f0f1a;
+    font-weight: 600;
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.75rem;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.1s ease;
+  }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-primary:active { transform: translateY(1px); }
+  .btn-primary:disabled { opacity: 0.55; cursor: default; }
+
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: transparent;
+    color: var(--color-text);
+    font-weight: 500;
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--color-border);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .btn-ghost:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+
+  .input {
+    width: 100%;
+    background: var(--color-bg-elev);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: 0.6rem;
+    padding: 0.7rem 0.85rem;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-glow); }
+  .input::placeholder { color: var(--color-text-muted); }
+
+  .eyebrow {
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+}
+
+/* ---- "or" / section divider with rule lines on both sides ---- */
+.divider-rule {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+}
+.divider-rule::before,
+.divider-rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+/* ---- Entrance animations ---- */
+.anim-fade-up { opacity: 0; animation: tf-fade-up 0.6s ease forwards; }
+.anim-slide-in { animation: tf-slide-in 0.3s ease forwards; }
+.delay-100 { animation-delay: 0.1s; }
+.delay-200 { animation-delay: 0.2s; }
+.delay-300 { animation-delay: 0.3s; }
+
+@keyframes tf-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tf-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+/* ---- Breathing logo (glow / icon / ring layers) ---- */
+.anim-glow-breathe { animation: tf-glow-breathe 4s ease-in-out infinite; }
+.anim-icon-breathe { animation: tf-icon-breathe 4s ease-in-out infinite; transform-origin: center; }
+.anim-ring-breathe { animation: tf-ring-breathe 4s ease-in-out infinite; transform-origin: center; }
+
+@keyframes tf-glow-breathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.7; }
+}
+@keyframes tf-icon-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+@keyframes tf-ring-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-up, .anim-slide-in,
+  .anim-glow-breathe, .anim-icon-breathe, .anim-ring-breathe {
+    animation: none;
+    opacity: 1;
+  }
+}

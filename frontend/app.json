@@ -1,0 +1,101 @@
+{
+  "expo": {
+    "name": "Tefillah",
+    "slug": "tefillah",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "tefillah",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "androidStatusBar": {
+      "backgroundColor": "#0f0f1a",
+      "barStyle": "light-content"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.tefilah.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Tefillah needs camera access for your profile photo.",
+        "NSPhotoLibraryUsageDescription": "Tefillah needs photo library access to select a profile photo.",
+        "NSLocationWhenInUseUsageDescription": "Tefillah uses your location to connect your prayers with nearby prayer partners.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#0f0f1a"
+      },
+      "package": "com.tefilah.app",
+      "googleServicesFile": "./google-services.json",
+      "allowBackup": false,
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ],
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.SCHEDULE_EXACT_ALARM"
+      ],
+      "edgeToEdgeEnabled": true,
+      "versionCode": 4
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 300,
+          "resizeMode": "contain",
+          "backgroundColor": "#0f0f1a"
+        }
+      ],
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#d4af37"
+        }
+      ],
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.240620097116-56c70o7cugdfc0cp71sco1gmk6a3tkun"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Tefillah uses your photos so you can set a profile picture."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "22c2d81a-4192-419e-973e-e2112b437e07"
+      },
+      "router": {}
+    },
+    "owner": "tefillah"
+  }
+}

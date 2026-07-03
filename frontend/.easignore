@@ -1,0 +1,38 @@
+# .easignore — overrides .gitignore for EAS Build uploads.
+# This file is used INSTEAD OF .gitignore when uploading to EAS.
+# It must re-include .env files so EXPO_PUBLIC_* vars get baked into the JS
+# bundle during the cloud build. (These vars are public and safe to upload.)
+
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Metro
+.metro-cache/
+
+# NOTE: .env, .env.local, .env.production are intentionally NOT ignored here
+# so EAS Build picks up EXPO_PUBLIC_* vars during bundling.
+
+# Build artifacts
+android/
+ios/
+web-build/
+
+# Generated
+expo-env.d.ts
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Firebase iOS-only service files (Android google-services.json IS needed)
+GoogleService-Info.plist

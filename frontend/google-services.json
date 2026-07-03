@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "240620097116",
+    "project_id": "tefillah-2283c",
+    "storage_bucket": "tefillah-2283c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:240620097116:android:88f80696bd800dc8daa099",
+        "android_client_info": {
+          "package_name": "com.tefilah.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "240620097116-c0dbh0e1d2jssbs5v1tl3runhsajp9tb.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.tefilah.app",
+            "certificate_hash": "0da736ddad705474098a09b7576e2f9316e93bab"
+          }
+        },
+        {
+          "client_id": "240620097116-cmjhfmtkkg14gpjv3919imj9l24hm7a1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5rJHT3_x9kLZNMRuR_aRCxK1fzth_3s8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "240620097116-cmjhfmtkkg14gpjv3919imj9l24hm7a1.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "240620097116-56c70o7cugdfc0cp71sco1gmk6a3tkun.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.tefilah.app"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

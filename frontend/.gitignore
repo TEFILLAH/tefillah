@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Metro
+.metro-health-check*
+
+# debug logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# misc
+.DS_Store
+*.tsbuildinfo
+
+# local env overrides (the build's EXPO_PUBLIC_* come from EAS env, not these)
+.env*.local
