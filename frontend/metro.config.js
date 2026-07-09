@@ -5,6 +5,10 @@ const { FileStore } = require('metro-cache');
 
 const config = getDefaultConfig(__dirname);
 
+// Bundled Bible translations: assets/bibles/*.bible are JSON payloads shipped
+// as raw assets (not part of the JS bundle) and loaded lazily on demand.
+config.resolver.assetExts.push('bible');
+
 // Stable on-disk cache (persists across restarts for faster warm builds)
 const root = process.env.METRO_CACHE_ROOT || path.join(__dirname, '.metro-cache');
 config.cacheStores = [

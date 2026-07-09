@@ -245,5 +245,26 @@
     "successTitle": "Password Changed",
     "successMessage": "Your password has been changed successfully.",
     "currentRequired": "Current password is required"
+  },
+  "bible": {
+    "title": "Holy Bible",
+    "version": "Version",
+    "versions": "Versions",
+    "books": "Books",
+    "oldTestament": "Old Testament",
+    "newTestament": "New Testament",
+    "chapter": "Chapter",
+    "chapters": "Chapters",
+    "search": "Search",
+    "searchHint": "Search this version…",
+    "results": "{{count}} results",
+    "noResults": "No verses found",
+    "loading": "Preparing…",
+    "failed": "Couldn't load this Bible.",
+    "retry": "Try again",
+    "fontSize": "Text size",
+    "comingSoon": "Coming soon",
+    "licensedNote": "Licensed versions (ESV, NIV, NKJV) are coming in a future update.",
+    "shareVerse": "Share verse"
   }
 }

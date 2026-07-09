@@ -70,6 +70,15 @@ export default function MainTabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="bible"
+        options={{
+          title: 'Bible',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? 'book' : 'book-outline'} size={22} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="history"
         options={{
           title: 'History',

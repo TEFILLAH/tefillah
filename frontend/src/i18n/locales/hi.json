@@ -245,5 +245,26 @@
     "successTitle": "पासवर्ड बदल गया",
     "successMessage": "आपका पासवर्ड सफलतापूर्वक बदल दिया गया है।",
     "currentRequired": "वर्तमान पासवर्ड आवश्यक है"
+  },
+  "bible": {
+    "title": "पवित्र बाइबिल",
+    "version": "संस्करण",
+    "versions": "संस्करण",
+    "books": "पुस्तकें",
+    "oldTestament": "पुराना नियम",
+    "newTestament": "नया नियम",
+    "chapter": "अध्याय",
+    "chapters": "अध्याय",
+    "search": "खोजें",
+    "searchHint": "इस संस्करण में खोजें…",
+    "results": "{{count}} परिणाम",
+    "noResults": "कोई वचन नहीं मिला",
+    "loading": "तैयार हो रहा है…",
+    "failed": "बाइबिल लोड नहीं हो सकी।",
+    "retry": "पुनः प्रयास करें",
+    "fontSize": "अक्षर आकार",
+    "comingSoon": "जल्द आ रहा है",
+    "licensedNote": "लाइसेंस प्राप्त संस्करण (ESV, NIV, NKJV) भविष्य के अपडेट में आएंगे।",
+    "shareVerse": "वचन साझा करें"
   }
 }
