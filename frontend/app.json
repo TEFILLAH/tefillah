@@ -85,7 +85,8 @@
         {
           "photosPermission": "Tefillah uses your photos so you can set a profile picture."
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
