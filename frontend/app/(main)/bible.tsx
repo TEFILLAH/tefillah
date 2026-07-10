@@ -13,6 +13,9 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 
@@ -29,9 +32,25 @@ import {
 } from '../../src/lib/bible/registry';
 import { loadBible } from '../../src/lib/bible/loader';
 import { MAX_FONT_SCALE, MIN_FONT_SCALE, useBibleStore } from '../../src/lib/bible/store';
+import {
+  HIGHLIGHT_COLORS,
+  highlightBg,
+  makeVerseKey,
+  parseVerseKey,
+  useAnnotations,
+} from '../../src/lib/bible/annotations';
+import { parseReference } from '../../src/lib/bible/refparse';
+import {
+  formatXrefTarget,
+  getXrefTargets,
+  loadXrefs,
+  xrefBookIndex,
+  xrefPreview,
+  type XrefTarget,
+} from '../../src/lib/bible/xrefs';
 import type { BibleData, SearchHit } from '../../src/lib/bible/types';
 
-type SheetKind = null | 'versions' | 'books' | 'search' | 'font';
+type SheetKind = null | 'versions' | 'books' | 'search' | 'font' | 'actions' | 'bookmarks';
 
 const SEARCH_MIN_CHARS = 2;
 const SEARCH_MAX_HITS = 200;
@@ -56,7 +75,16 @@ export default function BibleScreen() {
     setVersion,
     setPosition,
     adjustFontScale,
+    setFontScale,
   } = useBibleStore();
+  const {
+    hydrate: hydrateAnnotations,
+    bookmarks,
+    highlights,
+    toggleBookmark,
+    removeBookmark,
+    setHighlight,
+  } = useAnnotations();
 
   const [bible, setBible] = useState<BibleData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,16 +94,20 @@ export default function BibleScreen() {
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [searched, setSearched] = useState(false);
-  const [highlight, setHighlight] = useState<number | null>(null);
+  const [highlightVerse, setHighlightVerse] = useState<number | null>(null);
+  const [actionVerse, setActionVerse] = useState<VerseRow | null>(null);
+  const [verseXrefs, setVerseXrefs] = useState<XrefTarget[] | null>(null);
+  const [xrefsLoading, setXrefsLoading] = useState(false);
 
   const listRef = useRef<FlatList<VerseRow>>(null);
   const pendingVerse = useRef<number | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ---- boot: hydrate prefs, pick a default version for the app language ----
+  // ---- boot: hydrate prefs + annotations, pick default version ----
   useEffect(() => {
     hydrate();
-  }, [hydrate]);
+    hydrateAnnotations();
+  }, [hydrate, hydrateAnnotations]);
 
   useEffect(() => {
     if (hydrated && !versionId) {
@@ -117,18 +149,24 @@ export default function BibleScreen() {
     return rows;
   }, [book, chapter]);
 
-  // After a search jump, scroll to the target verse once the list has data.
+  const bookmarkedSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const b of bookmarks) s.add(b.key);
+    return s;
+  }, [bookmarks]);
+
+  // After a jump, scroll to the target verse once the list has data.
   useEffect(() => {
     const target = pendingVerse.current;
     if (target == null || verses.length === 0) return;
     pendingVerse.current = null;
     const idx = verses.findIndex((v) => v.n === target);
     if (idx >= 0) {
-      setHighlight(target);
+      setHighlightVerse(target);
       setTimeout(() => {
         listRef.current?.scrollToIndex({ index: idx, viewPosition: 0.25, animated: true });
       }, 250);
-      setTimeout(() => setHighlight(null), 3200);
+      setTimeout(() => setHighlightVerse(null), 3200);
     }
   }, [verses]);
 
@@ -138,9 +176,18 @@ export default function BibleScreen() {
       setPosition(b, c);
       setSheet(null);
       setPickerBook(null);
+      setActionVerse(null);
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
     },
     [setPosition],
+  );
+
+  const jumpToRef = useCallback(
+    (b: number, c: number, v?: number) => {
+      if (v != null) pendingVerse.current = v;
+      openChapter(b, c);
+    },
+    [openChapter],
   );
 
   const goNext = useCallback(() => {
@@ -158,17 +205,83 @@ export default function BibleScreen() {
   const atStart = bookIndex === 0 && chapter === 1;
   const atEnd = !!bible && bookIndex === bible.books.length - 1 && chapter === chapterCount;
 
-  // ---- share ----
-  const shareVerse = useCallback(
-    (row: VerseRow) => {
-      if (!book || !meta) return;
-      const ref = `${book.name} ${chapter}:${row.n}`;
-      Share.share({ message: `"${row.text}"\n— ${ref} (${meta.shortName})` }).catch(() => {});
-    },
-    [book, chapter, meta],
+  // ---- pinch-to-zoom: adjusts VERSE TEXT SIZE only (no page zoom) ----
+  const fontRef = useRef(fontScale);
+  useEffect(() => {
+    fontRef.current = fontScale;
+  }, [fontScale]);
+  const pinchBase = useRef(1);
+
+  const pinchGesture = useMemo(
+    () =>
+      Gesture.Pinch()
+        .runOnJS(true)
+        .onStart(() => {
+          pinchBase.current = fontRef.current;
+        })
+        .onUpdate((e) => {
+          const next = Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, pinchBase.current * e.scale));
+          // small threshold keeps re-renders sane during the gesture
+          if (Math.abs(next - fontRef.current) >= 0.02) setFontScale(next, false);
+        })
+        .onEnd(() => {
+          setFontScale(fontRef.current, true); // persist once
+        }),
+    [setFontScale],
   );
 
-  // ---- search (current version, debounced as-you-type + on submit) ----
+  // ---- verse actions ----
+  const verseKeyFor = useCallback(
+    (n: number) => (book ? makeVerseKey(book.id, chapter, n) : ''),
+    [book, chapter],
+  );
+
+  const refLabelFor = useCallback(
+    (n: number) => (book ? `${book.name} ${chapter}:${n}` : ''),
+    [book, chapter],
+  );
+
+  const shareVerse = useCallback(
+    (row: VerseRow) => {
+      if (!meta) return;
+      Share.share({ message: `"${row.text}"\n— ${refLabelFor(row.n)} (${meta.shortName})` }).catch(() => {});
+    },
+    [meta, refLabelFor],
+  );
+
+  const copyVerse = useCallback(
+    async (row: VerseRow) => {
+      if (!meta) return;
+      await Clipboard.setStringAsync(`"${row.text}" — ${refLabelFor(row.n)} (${meta.shortName})`).catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setSheet(null);
+      setActionVerse(null);
+    },
+    [meta, refLabelFor],
+  );
+
+  const openVerseActions = useCallback(
+    (row: VerseRow) => {
+      setActionVerse(row);
+      setSheet('actions');
+      setVerseXrefs(null);
+      if (book) {
+        setXrefsLoading(true);
+        loadXrefs()
+          .then((data) => setVerseXrefs(getXrefTargets(data, book.id, chapter, row.n)))
+          .catch(() => setVerseXrefs([]))
+          .finally(() => setXrefsLoading(false));
+      }
+    },
+    [book, chapter],
+  );
+
+  // ---- search: reference parsing + full-text, current version ----
+  const gotoRef = useMemo(
+    () => (bible && query.trim().length >= SEARCH_MIN_CHARS ? parseReference(query, bible.books) : null),
+    [bible, query],
+  );
+
   const runSearch = useCallback(
     (q: string) => {
       const needle = q.trim().toLowerCase();
@@ -204,39 +317,54 @@ export default function BibleScreen() {
     [runSearch],
   );
 
-  const jumpToHit = useCallback(
-    (hit: SearchHit) => {
-      pendingVerse.current = hit.verse;
-      openChapter(hit.bookIndex, hit.chapter);
-    },
-    [openChapter],
-  );
-
   // ---- render ----
   const verseBaseSize = 17 * fontScale;
   const verseLineHeight = Math.round(verseBaseSize * 1.72);
 
   const renderVerse = useCallback(
-    ({ item }: { item: VerseRow }) => (
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onLongPress={() => shareVerse(item)}
-        delayLongPress={350}
-        style={[
-          styles.verseRow,
-          highlight === item.n && { backgroundColor: colors.accentMuted, borderRadius: BORDER_RADIUS.md },
-        ]}
-      >
-        <Text style={[styles.verseText, { color: colors.text, fontSize: verseBaseSize, lineHeight: verseLineHeight }]}>
-          <Text style={[styles.verseNum, { color: colors.accent, fontSize: Math.max(11, verseBaseSize * 0.62) }]}>
-            {item.n}{'  '}
+    ({ item }: { item: VerseRow }) => {
+      const key = verseKeyFor(item.n);
+      const hlBg = highlightBg(highlights[key]);
+      const isBookmarked = bookmarkedSet.has(key);
+      const flashBg = highlightVerse === item.n ? colors.accentMuted : undefined;
+      return (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => openVerseActions(item)}
+          onLongPress={() => shareVerse(item)}
+          delayLongPress={350}
+          style={[
+            styles.verseRow,
+            (hlBg || flashBg) && { backgroundColor: flashBg ?? hlBg, borderRadius: BORDER_RADIUS.md },
+          ]}
+        >
+          <Text style={[styles.verseText, { color: colors.text, fontSize: verseBaseSize, lineHeight: verseLineHeight }]}>
+            <Text style={[styles.verseNum, { color: colors.accent, fontSize: Math.max(11, verseBaseSize * 0.62) }]}>
+              {item.n}
+              {isBookmarked ? ' ' : ''}
+              {isBookmarked && <Ionicons name="bookmark" size={Math.max(10, verseBaseSize * 0.55)} color={colors.accent} />}
+              {'  '}
+            </Text>
+            {item.text}
           </Text>
-          {item.text}
-        </Text>
-      </TouchableOpacity>
-    ),
-    [colors, highlight, shareVerse, verseBaseSize, verseLineHeight],
+        </TouchableOpacity>
+      );
+    },
+    [
+      colors,
+      highlightVerse,
+      highlights,
+      bookmarkedSet,
+      openVerseActions,
+      shareVerse,
+      verseBaseSize,
+      verseLineHeight,
+      verseKeyFor,
+    ],
   );
+
+  const actionKey = actionVerse ? verseKeyFor(actionVerse.n) : '';
+  const actionHighlight = actionVerse ? highlights[actionKey] : undefined;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -279,6 +407,14 @@ export default function BibleScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconBtn}
+            onPress={() => setSheet('bookmarks')}
+            activeOpacity={0.7}
+            accessibilityLabel={t('bible.bookmarks')}
+          >
+            <Ionicons name="bookmark-outline" size={19} color={colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.iconBtn}
             onPress={() => setSheet('font')}
             activeOpacity={0.7}
             accessibilityLabel={t('bible.fontSize')}
@@ -308,34 +444,36 @@ export default function BibleScreen() {
         </View>
       ) : (
         <>
-          <FlatList
-            ref={listRef}
-            data={verses}
-            keyExtractor={(v) => String(v.n)}
-            renderItem={renderVerse}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            initialNumToRender={20}
-            windowSize={9}
-            onScrollToIndexFailed={(info) => {
-              listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
-              setTimeout(
-                () => listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.25, animated: true }),
-                350,
-              );
-            }}
-            ListHeaderComponent={
-              <View style={styles.chapterHeader}>
-                <Text style={[styles.chapterBook, { color: colors.textMuted }]}>{book?.name}</Text>
-                <Text style={[styles.chapterNum, { color: colors.accent }]}>{chapter}</Text>
-              </View>
-            }
-            ListFooterComponent={
-              <Text style={[styles.license, { color: colors.textMuted }]}>
-                {bible.name} · {bible.license}
-              </Text>
-            }
-          />
+          <GestureDetector gesture={pinchGesture}>
+            <FlatList
+              ref={listRef}
+              data={verses}
+              keyExtractor={(v) => String(v.n)}
+              renderItem={renderVerse}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              initialNumToRender={20}
+              windowSize={9}
+              onScrollToIndexFailed={(info) => {
+                listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+                setTimeout(
+                  () => listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.25, animated: true }),
+                  350,
+                );
+              }}
+              ListHeaderComponent={
+                <View style={styles.chapterHeader}>
+                  <Text style={[styles.chapterBook, { color: colors.textMuted }]}>{book?.name}</Text>
+                  <Text style={[styles.chapterNum, { color: colors.accent }]}>{chapter}</Text>
+                </View>
+              }
+              ListFooterComponent={
+                <Text style={[styles.license, { color: colors.textMuted }]}>
+                  {bible.name} · {bible.license}
+                </Text>
+              }
+            />
+          </GestureDetector>
 
           {/* prev / next floating controls */}
           {!atStart && (
@@ -375,7 +513,10 @@ export default function BibleScreen() {
                       key={v.id}
                       style={[
                         styles.versionRow,
-                        { backgroundColor: active ? colors.accentMuted : colors.surface, borderColor: active ? colors.accent : colors.border },
+                        {
+                          backgroundColor: active ? colors.accentMuted : colors.surface,
+                          borderColor: active ? colors.accent : colors.border,
+                        },
                       ]}
                       onPress={() => {
                         if (!active) setVersion(v.id);
@@ -400,7 +541,6 @@ export default function BibleScreen() {
             );
           })}
 
-          {/* Licensed versions — locked until publisher licensing is secured */}
           <Text style={[styles.sheetGroupLabel, { color: colors.textMuted }]}>{t('bible.comingSoon')}</Text>
           {UPCOMING_VERSIONS.map((v) => (
             <View
@@ -431,11 +571,7 @@ export default function BibleScreen() {
           setPickerBook(null);
         }}
         colors={colors}
-        title={
-          pickerBook != null && bible
-            ? bible.books[pickerBook].name
-            : t('bible.books')
-        }
+        title={pickerBook != null && bible ? bible.books[pickerBook].name : t('bible.books')}
         onBack={pickerBook != null ? () => setPickerBook(null) : undefined}
       >
         {pickerBook == null ? (
@@ -487,7 +623,9 @@ export default function BibleScreen() {
                       onPress={() => openChapter(pickerBook, c + 1)}
                       activeOpacity={0.7}
                     >
-                      <Text style={[styles.chapterCellText, { color: active ? colors.buttonPrimaryText : colors.text }]}>
+                      <Text
+                        style={[styles.chapterCellText, { color: active ? colors.buttonPrimaryText : colors.text }]}
+                      >
                         {c + 1}
                       </Text>
                     </TouchableOpacity>
@@ -499,7 +637,7 @@ export default function BibleScreen() {
         )}
       </Sheet>
 
-      {/* ---------- search sheet ---------- */}
+      {/* ---------- search sheet (reference + full-text) ---------- */}
       <Sheet visible={sheet === 'search'} onClose={() => setSheet(null)} colors={colors} title={t('bible.search')}>
         <View style={[styles.searchBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Ionicons name="search" size={16} color={colors.textMuted} />
@@ -519,6 +657,22 @@ export default function BibleScreen() {
             </TouchableOpacity>
           )}
         </View>
+
+        {/* "Go to John 3:16" row when the query parses as a reference */}
+        {gotoRef && bible && (
+          <TouchableOpacity
+            style={[styles.gotoRow, { backgroundColor: colors.accentMuted, borderColor: colors.accent }]}
+            onPress={() => jumpToRef(gotoRef.bookIndex, gotoRef.chapter, gotoRef.verse)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="arrow-forward-circle" size={20} color={colors.accent} />
+            <Text style={[styles.gotoText, { color: colors.accent }]} numberOfLines={1}>
+              {t('bible.goTo')}: {bible.books[gotoRef.bookIndex].name} {gotoRef.chapter}
+              {gotoRef.verse ? `:${gotoRef.verse}` : ''}
+            </Text>
+          </TouchableOpacity>
+        )}
+
         <FlatList
           data={hits}
           keyExtractor={(h) => `${h.bookIndex}-${h.chapter}-${h.verse}`}
@@ -526,7 +680,7 @@ export default function BibleScreen() {
           renderItem={({ item }) => (
             <TouchableOpacity
               style={[styles.hitRow, { borderBottomColor: colors.border }]}
-              onPress={() => jumpToHit(item)}
+              onPress={() => jumpToRef(item.bookIndex, item.chapter, item.verse)}
               activeOpacity={0.7}
             >
               <Text style={[styles.hitRef, { color: colors.accent }]}>
@@ -545,18 +699,193 @@ export default function BibleScreen() {
             ) : null
           }
           ListEmptyComponent={
-            searched && query.trim().length >= SEARCH_MIN_CHARS ? (
+            searched && !gotoRef && query.trim().length >= SEARCH_MIN_CHARS ? (
               <Text style={[styles.noResults, { color: colors.textMuted }]}>{t('bible.noResults')}</Text>
             ) : null
           }
         />
       </Sheet>
 
+      {/* ---------- verse actions sheet ---------- */}
+      <Sheet
+        visible={sheet === 'actions' && actionVerse != null}
+        onClose={() => {
+          setSheet(null);
+          setActionVerse(null);
+        }}
+        colors={colors}
+        title={actionVerse ? refLabelFor(actionVerse.n) : ''}
+      >
+        {actionVerse && book && (
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <Text style={[styles.actionVerseText, { color: colors.textSecondary }]} numberOfLines={4}>
+              {actionVerse.text}
+            </Text>
+
+            {/* actions row */}
+            <View style={styles.actionRow}>
+              <ActionButton
+                colors={colors}
+                icon="copy-outline"
+                label={t('bible.copy')}
+                onPress={() => copyVerse(actionVerse)}
+              />
+              <ActionButton
+                colors={colors}
+                icon="share-social-outline"
+                label={t('bible.share')}
+                onPress={() => shareVerse(actionVerse)}
+              />
+              <ActionButton
+                colors={colors}
+                icon={bookmarkedSet.has(actionKey) ? 'bookmark' : 'bookmark-outline'}
+                label={t('bible.bookmark')}
+                active={bookmarkedSet.has(actionKey)}
+                onPress={() => {
+                  toggleBookmark(actionKey);
+                  Haptics.selectionAsync().catch(() => {});
+                }}
+              />
+            </View>
+
+            {/* highlight palette */}
+            <Text style={[styles.sheetGroupLabel, { color: colors.textMuted }]}>{t('bible.highlight')}</Text>
+            <View style={styles.highlightRow}>
+              {HIGHLIGHT_COLORS.map((c) => (
+                <TouchableOpacity
+                  key={c.id}
+                  style={[
+                    styles.highlightDot,
+                    { backgroundColor: c.bg, borderColor: actionHighlight === c.id ? colors.accent : colors.border },
+                  ]}
+                  onPress={() => {
+                    setHighlight(actionKey, actionHighlight === c.id ? null : c.id);
+                    Haptics.selectionAsync().catch(() => {});
+                  }}
+                  activeOpacity={0.7}
+                >
+                  {actionHighlight === c.id && <Ionicons name="checkmark" size={16} color={colors.text} />}
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity
+                style={[styles.highlightDot, { backgroundColor: 'transparent', borderColor: colors.border }]}
+                onPress={() => setHighlight(actionKey, null)}
+                activeOpacity={0.7}
+                accessibilityLabel="Remove highlight"
+              >
+                <Ionicons name="close" size={16} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* cross references */}
+            <Text style={[styles.sheetGroupLabel, { color: colors.textMuted }]}>{t('bible.crossRefs')}</Text>
+            {xrefsLoading ? (
+              <ActivityIndicator size="small" color={colors.accent} style={{ marginVertical: SPACING.md }} />
+            ) : verseXrefs && verseXrefs.length > 0 ? (
+              verseXrefs.map((x) => {
+                const bIdx = xrefBookIndex(x, bible.books);
+                if (bIdx < 0) return null;
+                const preview = xrefPreview(x, bible.books);
+                return (
+                  <TouchableOpacity
+                    key={x.raw}
+                    style={[styles.xrefRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                    onPress={() => jumpToRef(bIdx, x.chapter, x.verse)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.xrefMain}>
+                      <Text style={[styles.hitRef, { color: colors.accent }]}>
+                        {formatXrefTarget(x, bible.books)}
+                      </Text>
+                      {!!preview && (
+                        <Text style={[styles.hitText, { color: colors.textSecondary }]} numberOfLines={2}>
+                          {preview}
+                        </Text>
+                      )}
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                  </TouchableOpacity>
+                );
+              })
+            ) : (
+              <Text style={[styles.noResults, { color: colors.textMuted, marginTop: SPACING.xs }]}>
+                {t('bible.noCrossRefs')}
+              </Text>
+            )}
+            {verseXrefs && verseXrefs.length > 0 && (
+              <Text style={[styles.xrefCredit, { color: colors.textMuted }]}>{t('bible.xrefCredit')}</Text>
+            )}
+            <View style={{ height: SPACING.xl }} />
+          </ScrollView>
+        )}
+      </Sheet>
+
+      {/* ---------- bookmarks sheet ---------- */}
+      <Sheet visible={sheet === 'bookmarks'} onClose={() => setSheet(null)} colors={colors} title={t('bible.bookmarks')}>
+        {bible && (
+          <FlatList
+            data={bookmarks}
+            keyExtractor={(b) => b.key}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) => {
+              const parsed = parseVerseKey(item.key);
+              if (!parsed) return null;
+              const bIdx = bible.books.findIndex((b) => b.id === parsed.bookId);
+              if (bIdx < 0) return null;
+              const bk = bible.books[bIdx];
+              const text = bk.chapters[parsed.chapter - 1]?.[parsed.verse - 1] ?? '';
+              return (
+                <View style={[styles.bookmarkRow, { borderBottomColor: colors.border }]}>
+                  <TouchableOpacity
+                    style={styles.bookmarkMain}
+                    onPress={() => jumpToRef(bIdx, parsed.chapter, parsed.verse)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.hitRef, { color: colors.accent }]}>
+                      {bk.name} {parsed.chapter}:{parsed.verse}
+                    </Text>
+                    {!!text && (
+                      <Text style={[styles.hitText, { color: colors.textSecondary }]} numberOfLines={2}>
+                        {text}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.bookmarkDelete}
+                    onPress={() => removeBookmark(item.key)}
+                    activeOpacity={0.7}
+                    accessibilityLabel="Delete bookmark"
+                  >
+                    <Ionicons name="trash-outline" size={17} color={colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              );
+            }}
+            ListEmptyComponent={
+              <Text style={[styles.noResults, { color: colors.textMuted }]}>{t('bible.noBookmarks')}</Text>
+            }
+          />
+        )}
+      </Sheet>
+
       {/* ---------- font-size sheet ---------- */}
-      <Sheet visible={sheet === 'font'} onClose={() => setSheet(null)} colors={colors} title={t('bible.fontSize')} compact>
+      <Sheet
+        visible={sheet === 'font'}
+        onClose={() => setSheet(null)}
+        colors={colors}
+        title={t('bible.fontSize')}
+        compact
+      >
         <View style={styles.fontRow}>
           <TouchableOpacity
-            style={[styles.fontBtn, { backgroundColor: colors.surface, borderColor: colors.border, opacity: fontScale <= MIN_FONT_SCALE ? 0.4 : 1 }]}
+            style={[
+              styles.fontBtn,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+                opacity: fontScale <= MIN_FONT_SCALE ? 0.4 : 1,
+              },
+            ]}
             onPress={() => adjustFontScale(-1)}
             disabled={fontScale <= MIN_FONT_SCALE}
             activeOpacity={0.7}
@@ -564,11 +893,18 @@ export default function BibleScreen() {
             <Text style={[styles.fontBtnText, { color: colors.text, fontSize: 14 }]}>A</Text>
           </TouchableOpacity>
           <Text style={[styles.fontPreview, { color: colors.text, fontSize: 17 * fontScale }]}>
-            {book && verses[0] ? verses[0].text.slice(0, 40) : 'Aa'}
-            {book && verses[0] && verses[0].text.length > 40 ? '…' : ''}
+            {verses[0] ? verses[0].text.slice(0, 40) : 'Aa'}
+            {verses[0] && verses[0].text.length > 40 ? '…' : ''}
           </Text>
           <TouchableOpacity
-            style={[styles.fontBtn, { backgroundColor: colors.surface, borderColor: colors.border, opacity: fontScale >= MAX_FONT_SCALE ? 0.4 : 1 }]}
+            style={[
+              styles.fontBtn,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+                opacity: fontScale >= MAX_FONT_SCALE ? 0.4 : 1,
+              },
+            ]}
             onPress={() => adjustFontScale(1)}
             disabled={fontScale >= MAX_FONT_SCALE}
             activeOpacity={0.7}
@@ -576,12 +912,41 @@ export default function BibleScreen() {
             <Text style={[styles.fontBtnText, { color: colors.text, fontSize: 22 }]}>A</Text>
           </TouchableOpacity>
         </View>
+        <Text style={[styles.pinchHint, { color: colors.textMuted }]}>{t('bible.pinchHint')}</Text>
       </Sheet>
     </SafeAreaView>
   );
 }
 
-/* ---------------- bottom sheet wrapper ---------------- */
+/* ---------------- small components ---------------- */
+
+function ActionButton({
+  colors,
+  icon,
+  label,
+  onPress,
+  active,
+}: {
+  colors: any;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  onPress: () => void;
+  active?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      style={[
+        styles.actionBtn,
+        { backgroundColor: active ? colors.accentMuted : colors.surface, borderColor: active ? colors.accent : colors.border },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
+      <Ionicons name={icon} size={19} color={active ? colors.accent : colors.text} />
+      <Text style={[styles.actionBtnLabel, { color: active ? colors.accent : colors.text }]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
 
 function Sheet({
   visible,
@@ -662,7 +1027,7 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Avenir-Heavy' : 'sans-serif',
     flexShrink: 1,
   },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 0 },
   versionPill: {
     paddingHorizontal: SPACING.sm,
     paddingVertical: 6,
@@ -670,7 +1035,7 @@ const styles = StyleSheet.create({
     marginRight: 2,
   },
   versionPillText: { fontSize: FONTS.sizes.xs, fontWeight: '700', letterSpacing: 0.5 },
-  iconBtn: { padding: 8 },
+  iconBtn: { padding: 7 },
 
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: SPACING.sm, padding: SPACING.xl },
   centerText: { fontSize: FONTS.sizes.md, textAlign: 'center' },
@@ -806,11 +1171,67 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
   searchInput: { flex: 1, paddingVertical: 10, fontSize: FONTS.sizes.md },
+  gotoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.lg,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  gotoText: { fontSize: FONTS.sizes.md, fontWeight: '700', flexShrink: 1 },
   hitRow: { paddingVertical: SPACING.sm, borderBottomWidth: StyleSheet.hairlineWidth },
   hitRef: { fontSize: FONTS.sizes.sm, fontWeight: '700', marginBottom: 2 },
   hitText: { fontSize: FONTS.sizes.sm, lineHeight: 19 },
   hitCount: { fontSize: FONTS.sizes.xs, marginBottom: SPACING.xs },
   noResults: { fontSize: FONTS.sizes.sm, textAlign: 'center', marginTop: SPACING.xl },
+
+  // verse actions
+  actionVerseText: { fontSize: FONTS.sizes.sm, lineHeight: 20, marginTop: SPACING.md, fontStyle: 'italic' },
+  actionRow: { flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.md },
+  actionBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+  },
+  actionBtnLabel: { fontSize: FONTS.sizes.xs, fontWeight: '600' },
+  highlightRow: { flexDirection: 'row', gap: SPACING.sm, alignItems: 'center' },
+  highlightDot: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  xrefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: SPACING.sm,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    marginBottom: SPACING.xs,
+    gap: SPACING.sm,
+  },
+  xrefMain: { flex: 1 },
+  xrefCredit: { fontSize: 10, marginTop: SPACING.xs, marginLeft: SPACING.xs },
+
+  bookmarkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: SPACING.sm,
+  },
+  bookmarkMain: { flex: 1 },
+  bookmarkDelete: { padding: SPACING.xs },
 
   fontRow: {
     flexDirection: 'row',
@@ -833,5 +1254,10 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  pinchHint: {
+    fontSize: FONTS.sizes.xs,
+    textAlign: 'center',
+    marginTop: SPACING.md,
   },
 });

@@ -27,6 +27,11 @@ interface BibleStore extends PersistedPrefs {
   setVersion: (versionId: string) => void;
   setPosition: (bookIndex: number, chapter: number) => void;
   adjustFontScale: (dir: 1 | -1) => void;
+  /**
+   * Absolute setter used by the pinch-to-zoom gesture. save=false during the
+   * live gesture (state only), save=true on gesture end (persists once).
+   */
+  setFontScale: (scale: number, save?: boolean) => void;
 }
 
 const DEFAULTS: PersistedPrefs = {
@@ -95,5 +100,11 @@ export const useBibleStore = create<BibleStore>((set, get) => ({
     );
     set({ fontScale: next });
     persist({ ...get(), fontScale: next });
+  },
+
+  setFontScale: (scale, save = true) => {
+    const next = Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, Math.round(scale * 100) / 100));
+    set({ fontScale: next });
+    if (save) persist({ ...get(), fontScale: next });
   },
 }));

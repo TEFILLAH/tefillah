@@ -265,6 +265,17 @@
     "fontSize": "Text size",
     "comingSoon": "Coming soon",
     "licensedNote": "Licensed versions (ESV, NIV, NKJV) are coming in a future update.",
-    "shareVerse": "Share verse"
+    "shareVerse": "Share verse",
+    "copy": "Copy",
+    "bookmark": "Bookmark",
+    "bookmarks": "Bookmarks",
+    "noBookmarks": "No bookmarks yet. Tap a verse and choose Bookmark.",
+    "highlight": "Highlight",
+    "crossRefs": "Cross-references",
+    "noCrossRefs": "No cross-references for this verse.",
+    "goTo": "Go to",
+    "share": "Share",
+    "xrefCredit": "Cross-references: OpenBible.info (CC-BY)",
+    "pinchHint": "Pinch to change text size"
   }
 }
