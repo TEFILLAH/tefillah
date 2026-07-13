@@ -1,6 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, BackgroundTasks, Request, Query, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -1215,6 +1214,14 @@ app.add_middleware(SecurityHeadersMiddleware)
 # traceback, file path, or SQL/Mongo detail. (FastAPI defaults to debug=False,
 # so this only adds JSON shape + audit logging.)
 from fastapi.responses import JSONResponse as _JSONResponse
+from pymongo.errors import DuplicateKeyError as _DuplicateKeyError
+
+@app.exception_handler(_DuplicateKeyError)
+async def _duplicate_key_handler(request: Request, exc: _DuplicateKeyError):
+    # A concurrent/double-submitted signup that loses the race to the unique email index
+    # should read as a clean 400, not a scary 500. Covers register_user/register_partner
+    # and every social-auth create path in one place.
+    return _JSONResponse(status_code=400, content={"detail": "This email is already registered."})
 
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception):
@@ -1637,7 +1644,9 @@ async def switch_account(current_user: dict = Depends(get_current_user)):
     account = {
         k: v for k, v in counterpart.items()
         if k not in ("password_hash", "verification_code", "verification_expires",
-                     "password_reset_code", "password_reset_expires", "fcm_token")
+                     "password_reset_code", "password_reset_expires", "fcm_token",
+                     "pending_email", "pending_email_code", "pending_email_expires",
+                     "password_reset_attempts")
     }
     account["id"] = account.pop("_id", None)
     return {"access_token": token, "token_type": "bearer", "user_type": target, "account": account}
