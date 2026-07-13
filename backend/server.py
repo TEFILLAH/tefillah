@@ -1359,7 +1359,7 @@ async def root():
     # VULN-08/09 (TASK-5/6): do not fingerprint the stack — no version banner
     # and no LLM provider/model name (that's a cost-attack reconnaissance leak).
     return {
-        "message": "TEFILAH API - Sacred Prayer Platform",
+        "message": "Tefillah - Sacred Prayer Platform",
         "status": "active",
     }
 
@@ -1408,11 +1408,11 @@ async def register_user(user_data: UserCreate, request: Request, background_task
     
     # Send verification email
     email_body = f"""
-    <h2>Welcome to TEFILAH!</h2>
+    <h2>Welcome to Tefillah!</h2>
     <p>Your verification code is: <strong>{verification_code}</strong></p>
     <p>This code expires in 24 hours.</p>
     """
-    background_tasks.add_task(send_email, user_data.email, "Verify Your TEFILAH Account", email_body)
+    background_tasks.add_task(send_email, user_data.email, "Verify Your Tefillah Account", email_body)
     logger.info(f"Verification email sent to {user_data.email}")
     
     await log_activity("user_registered", "user", user_id, user_data.name, ip_address=client_ip)
@@ -1586,11 +1586,11 @@ async def resend_verification(request: Request, background_tasks: BackgroundTask
     )
     
     email_body = f"""
-    <h2>TEFILAH Verification Code</h2>
+    <h2>Tefillah Verification Code</h2>
     <p>Your new verification code is: <strong>{new_code}</strong></p>
     <p>This code expires in 24 hours.</p>
     """
-    background_tasks.add_task(send_email, target_email, "Your TEFILAH Verification Code", email_body)
+    background_tasks.add_task(send_email, target_email, "Your Tefillah Verification Code", email_body)
     logger.info(f"New verification code sent to {target_email}")
     
     return {"message": "Verification code sent"}
@@ -1733,7 +1733,7 @@ async def forgot_password(data: ForgotPasswordRequest, request: Request, backgro
 
     email_body = f"""
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #d4af37; text-align: center;">TEFILAH</h2>
+        <h2 style="color: #d4af37; text-align: center;">Tefillah</h2>
         <h3 style="text-align: center;">Password Reset Request</h3>
         <p>You requested a password reset. Use the code below to reset your password:</p>
         <div style="background: #f5f5f5; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
@@ -1743,7 +1743,7 @@ async def forgot_password(data: ForgotPasswordRequest, request: Request, backgro
         <p style="color: #666; font-size: 14px;">If you did not request this, please ignore this email.</p>
     </div>
     """
-    background_tasks.add_task(send_email, email, "TEFILAH - Password Reset Code", email_body)
+    background_tasks.add_task(send_email, email, "Tefillah - Password Reset Code", email_body)
     logger.info(f"Password reset code sent to {email}")
 
     return {"message": "If an account with this email exists, a reset code has been sent."}
@@ -2089,11 +2089,11 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
         await db.partners.insert_one(partner_doc)
 
         email_body = f"""
-        <h2>Welcome to TEFILAH Prayer Partners!</h2>
+        <h2>Welcome to Tefillah Prayer Partners!</h2>
         <p>Your verification code is: <strong>{verification_code}</strong></p>
         <p>This code expires in 24 hours.</p>
         """
-        background_tasks.add_task(send_email, email, "Verify Your TEFILAH Partner Account", email_body)
+        background_tasks.add_task(send_email, email, "Verify Your Tefillah Partner Account", email_body)
 
         token = create_token(partner_id, email, "partner")
         return TokenResponse(
@@ -2158,11 +2158,11 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
         await db.users.insert_one(user_doc)
 
         email_body = f"""
-        <h2>Welcome to TEFILAH!</h2>
+        <h2>Welcome to Tefillah!</h2>
         <p>Your verification code is: <strong>{verification_code}</strong></p>
         <p>This code expires in 24 hours.</p>
         """
-        background_tasks.add_task(send_email, email, "Verify Your TEFILAH Account", email_body)
+        background_tasks.add_task(send_email, email, "Verify Your Tefillah Account", email_body)
 
         token = create_token(user_id, email, "user")
         return TokenResponse(
@@ -2246,8 +2246,8 @@ async def complete_social_auth(
             "created_at": datetime.now(timezone.utc), "last_active": datetime.now(timezone.utc),
         }
         await db.partners.insert_one(partner_doc)
-        email_body = f"<h2>Welcome to TEFILAH!</h2><p>Your verification code: <strong>{verification_code}</strong></p>"
-        background_tasks.add_task(send_email, email, "Verify Your TEFILAH Partner Account", email_body)
+        email_body = f"<h2>Welcome to Tefillah!</h2><p>Your verification code: <strong>{verification_code}</strong></p>"
+        background_tasks.add_task(send_email, email, "Verify Your Tefillah Partner Account", email_body)
         token = create_token(partner_id, email, "partner")
         return TokenResponse(
             access_token=token,
@@ -2299,8 +2299,8 @@ async def complete_social_auth(
             "created_at": datetime.now(timezone.utc), "last_login": datetime.now(timezone.utc),
         }
         await db.users.insert_one(user_doc)
-        email_body = f"<h2>Welcome to TEFILAH!</h2><p>Your verification code: <strong>{verification_code}</strong></p>"
-        background_tasks.add_task(send_email, email, "Verify Your TEFILAH Account", email_body)
+        email_body = f"<h2>Welcome to Tefillah!</h2><p>Your verification code: <strong>{verification_code}</strong></p>"
+        background_tasks.add_task(send_email, email, "Verify Your Tefillah Account", email_body)
         token = create_token(user_id, email, "user")
         return TokenResponse(
             access_token=token,
@@ -2375,12 +2375,12 @@ async def register_partner(partner_data: PartnerCreate, request: Request, backgr
     
     # Send verification email
     email_body = f"""
-    <h2>Welcome to TEFILAH Prayer Partners!</h2>
+    <h2>Welcome to Tefillah Prayer Partners!</h2>
     <p>Thank you for joining as a prayer partner.</p>
     <p>Your verification code is: <strong>{verification_code}</strong></p>
     <p>This code expires in 24 hours.</p>
     """
-    background_tasks.add_task(send_email, partner_data.email, "Verify Your TEFILAH Partner Account", email_body)
+    background_tasks.add_task(send_email, partner_data.email, "Verify Your Tefillah Partner Account", email_body)
     logger.info(f"Partner verification email sent to {partner_data.email}")
     
     await log_activity("partner_registered", "partner", partner_id, partner_data.name, ip_address=client_ip)
