@@ -263,7 +263,14 @@ function LineChart({
   const maxRaw = Math.max(1, ...all.map((d) => d.count));
   // round the axis max up to a "nice" number
   const niceMax = niceCeil(maxRaw);
-  const n = Math.max(...series.map((s) => s.points.length));
+  // Zero-fill each series to the shared, sorted union of dates so a series with
+  // fewer buckets aligns to the correct dates instead of plotting by index.
+  const dates = Array.from(new Set(all.map((d) => d.date))).sort();
+  const filled = series.map((s) => ({
+    color: s.color,
+    points: dates.map((d) => s.points.find((p) => p.date === d) ?? { date: d, count: 0 }),
+  }));
+  const n = dates.length;
 
   const xFor = (i: number) => (n <= 1 ? (W - padL - padR) / 2 + padL : padL + (i / (n - 1)) * (W - padL - padR));
   const yFor = (v: number) => padT + (1 - v / niceMax) * (H - padT - padB);
@@ -288,7 +295,7 @@ function LineChart({
       {compact && <line x1={padL} y1={yFor(0)} x2={W - padR} y2={yFor(0)} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />}
 
       {/* series lines + faint area */}
-      {series.map((s, si) => {
+      {filled.map((s, si) => {
         if (s.points.length === 0) return null;
         const pts = s.points.map((d, i) => ({ x: xFor(i), y: yFor(d.count) }));
         const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
@@ -312,7 +319,7 @@ function LineChart({
       {!compact &&
         labelIdx.map((i) => (
           <text key={i} x={xFor(i)} y={H - 8} textAnchor="middle" fontSize="11" fill="#7c7c8e">
-            {fmtAxisDate(series[0].points[i]?.date ?? series[1]?.points[i]?.date ?? '')}
+            {fmtAxisDate(dates[i] ?? '')}
           </text>
         ))}
     </svg>

@@ -367,13 +367,19 @@ function AreaChart({ lines, height = 250 }: { lines: { points: Pt[]; color: stri
   if (all.length === 0) {
     return <p className="text-center text-[color:var(--t3)] py-16 text-sm">No activity for this period yet.</p>;
   }
+  // Zero-fill: align every series to the shared, sorted union of dates so a
+  // series with fewer buckets plots against the correct dates (not by index).
+  const dates = Array.from(new Set(all.map((d) => d.date))).sort();
+  const filled = lines.map((s) => ({
+    color: s.color,
+    points: dates.map((d) => s.points.find((p) => p.date === d) ?? { date: d, count: 0 }),
+  }));
   const niceMax = niceCeil(Math.max(1, ...all.map((d) => d.count)));
-  const n = Math.max(...lines.map((s) => s.points.length));
+  const n = dates.length;
   const xFor = (i: number) => (n <= 1 ? (W - padL - padR) / 2 + padL : padL + (i / (n - 1)) * (W - padL - padR));
   const yFor = (v: number) => padT + (1 - v / niceMax) * (H - padT - padB);
   const yTicks = [0, niceMax / 2, niceMax];
   const labelIdx = n <= 1 ? [0] : [0, Math.floor((n - 1) / 2), n - 1];
-  const baseline = lines.find((s) => s.points.length)?.points ?? [];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height }}>
@@ -386,7 +392,7 @@ function AreaChart({ lines, height = 250 }: { lines: { points: Pt[]; color: stri
           </g>
         );
       })}
-      {lines.map((s, si) => {
+      {filled.map((s, si) => {
         if (s.points.length === 0) return null;
         const pts = s.points.map((d, i) => ({ x: xFor(i), y: yFor(d.count) }));
         const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
@@ -407,7 +413,7 @@ function AreaChart({ lines, height = 250 }: { lines: { points: Pt[]; color: stri
       })}
       {labelIdx.map((i) => (
         <text key={i} x={xFor(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="#7c7c8e">
-          {fmtAxisDate(baseline[i]?.date ?? '')}
+          {fmtAxisDate(dates[i] ?? '')}
         </text>
       ))}
     </svg>

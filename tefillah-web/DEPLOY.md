@@ -1,70 +1,71 @@
 # Deploying tefillah-web to tefillah.in
 
-This is a Vite + React SPA. Same backend as the mobile app and admin panel
-(`api.tefillah.in`). No backend change is required — CORS already lists
-`https://tefillah.in` and `https://www.tefillah.in`.
+Vite + React SPA (public site + `/admin` panel). Same FastAPI backend as the
+mobile app.
 
-## Production build
+## ⚠️ The ONLY correct way to deploy
 
 ```bash
 cd tefillah-web
-npm install
-npm run build
+bash deploy-web.sh
 ```
 
-Output: `tefillah-web/dist/` (~110 kB gzip JS + 6 kB gzip CSS).
+That script does everything safely: fresh build, uploads content-hashed
+`/assets/*` with a 1-year immutable `Cache-Control`, uploads `index.html` +
+`firebase-messaging-sw.js` with `no-cache`, invalidates only the revalidate
+paths, and — crucially — **never runs `s3 sync --delete`** (see "Pitfalls").
 
-## Pick a host
+> If `npm run build` fails with `EPERM ... lstat 'D:\'` on this machine, run
+> `cmd //c "subst B: D:\tefilah-fixed\tefilah-fixed"` and deploy from
+> `/b/tefillah-web`.
 
-Both options below ship the SPA with the security headers in place
-(`X-Content-Type-Options`, `X-Frame-Options: DENY`, `Strict-Transport-Security`,
-a tight `Content-Security-Policy`, and a `Permissions-Policy`).
+## The real production stack (do NOT change these)
 
-### Option A — Vercel
+| Piece | Value |
+|---|---|
+| Origin | S3 bucket **`tefillah-web-prod`** (region `ap-south-1`) |
+| CDN | CloudFront distribution **`E20DJ1IDF5M5MD`** → `tefillah.in` |
+| DNS | Route 53 A/AAAA **ALIAS** records → the CloudFront distribution |
+| SPA routing | CloudFront custom error responses map 403/404 → `/index.html` (200) — verified live for `/signup`, `/admin/login`, unknown paths |
+| Rollback | S3 **Object Versioning** is enabled — restore a previous object version |
 
-1. From the repo root: `npx vercel link` (sign in once).
-2. From `tefillah-web/`: `npx vercel --prod`.
-3. In the Vercel dashboard, add a custom domain `tefillah.in` (and
-   `www.tefillah.in` redirect → `tefillah.in`).
-4. Update DNS to point `tefillah.in` to Vercel (`A` 76.76.21.21 or use the
-   nameservers Vercel suggests).
+**There is no Vercel and no Cloudflare Pages deployment.** Never run
+`npx vercel --prod`, and never repoint the `tefillah.in` apex A record away from
+CloudFront — doing so instantly takes the live site, admin panel, and web push
+offline. `vercel.json`, `public/_headers`, and `public/_redirects` are dead
+artifacts from an old plan (the deploy script excludes them from upload); they
+have no effect on S3/CloudFront (response headers come from the CloudFront
+response-headers policy).
 
-The repo includes a `vercel.json` that wires SPA rewrites and the security
-headers — no extra config in the dashboard is needed.
+**DNS records that must NEVER be touched:** the Resend `send.tefillah.in`
+records and the Google Workspace MX records.
 
-### Option B — Cloudflare Pages
+## One-time cache repair (if assets ever lost their header)
 
-1. Connect the GitHub/GitLab repo in the Cloudflare Pages dashboard.
-2. Build command: `npm run build`. Output directory: `dist`. Root: `tefillah-web`.
-3. Add a custom domain `tefillah.in` in the Pages project settings.
-
-`public/_headers` and `public/_redirects` are committed and Cloudflare picks
-them up automatically.
-
-## DNS
-
-Whichever host you pick, point these records at it:
-
-| Host          | Type | Target                          |
-| ------------- | ---- | ------------------------------- |
-| `tefillah.in` | A    | (host's apex IP)                |
-| `www`         | CNAME| `tefillah.in`                   |
-
-Existing records to leave alone:
-- `api.tefillah.in` → AWS Elastic Beanstalk (the FastAPI backend).
-- `admin.tefillah.in` → wherever the admin panel is deployed.
-
-## Smoke test the live site
+If a bare `s3 sync` was run in the past, the hashed assets may be missing their
+`Cache-Control`. Repair the objects already in the bucket without redeploying:
 
 ```bash
-# Headers
-curl -sI https://tefillah.in | grep -E "Strict-Transport|Content-Security|X-Frame"
-
-# Health (round-trips to the API)
-curl -s https://api.tefillah.in/api/health
+bash deploy-web.sh --repair-cache
 ```
 
-## Rollback
+## Pitfalls this pipeline avoids
 
-Both Vercel and Cloudflare Pages keep every deployment immutably. To roll back,
-re-promote the previous deployment from the dashboard — no redeploy required.
+- **`--delete` at deploy time** removes the previous build's hashed chunks the
+  moment the new build lands. A user who loaded the site earlier and then opens
+  a lazy route (`/admin` → `AdminApp-<hash>.js`) requests a now-deleted chunk →
+  the SPA rewrite serves `index.html` as JS → white-screen crash. We upload
+  assets additively and prune old chunks later via an S3 lifecycle rule on
+  noncurrent versions.
+- **No `Cache-Control` on hashed assets** makes every visitor re-validate the
+  ~600 KB bundle on every visit. The script sets `immutable`, safe because the
+  filenames are content-hashed.
+- **Deploying a stale local `dist/`** silently rolls production back. The script
+  always rebuilds from source first.
+
+## Backend deploy
+
+The backend is separate: from the repo root run `bash deploy-backend.sh` (it
+rebuilds, md5-verifies the bundle, uploads, and health-polls the
+`tefillah-api-prod-v2` Elastic Beanstalk environment automatically). Do not
+hand-zip or `eb deploy` manually — that bypasses the safety gates.
