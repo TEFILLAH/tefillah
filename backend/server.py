@@ -796,30 +796,38 @@ def check_admin_permission(admin: dict, required_permission: str):
     raise HTTPException(status_code=403, detail=f"Insufficient permissions: requires '{required_permission}'")
 
 async def send_fcm_push(tokens: List[str], title: str, body: str, data: Dict = None) -> Dict:
-    """Send FCM push notification to multiple device tokens."""
+    """Send an FCM push to many device tokens.
+
+    Batches into multicast requests (500/req — FCM's cap) and runs the blocking
+    firebase-admin HTTP call in a worker thread via asyncio.to_thread, so even a
+    5,000-device broadcast never stalls the async event loop (a per-token
+    synchronous loop would freeze every other request for minutes)."""
     if not _firebase_initialized:
         return {"success": 0, "failure": 0, "error": "Firebase not initialized"}
 
     if not tokens:
         return {"success": 0, "failure": 0, "error": "No tokens provided"}
 
+    # FCM requires all data-payload values to be strings.
+    str_data = {str(k): str(v) for k, v in (data or {}).items()}
+    notification = firebase_messaging.Notification(title=title, body=body)
     success_count = 0
     failure_count = 0
 
-    notification = firebase_messaging.Notification(title=title, body=body)
-
-    for token in tokens:
+    for i in range(0, len(tokens), 500):
+        batch = tokens[i:i + 500]
+        message = firebase_messaging.MulticastMessage(
+            notification=notification,
+            data=str_data,
+            tokens=batch,
+        )
         try:
-            message = firebase_messaging.Message(
-                notification=notification,
-                data=data or {},
-                token=token,
-            )
-            firebase_messaging.send(message)
-            success_count += 1
+            resp = await asyncio.to_thread(firebase_messaging.send_each_for_multicast, message)
+            success_count += resp.success_count
+            failure_count += resp.failure_count
         except Exception as e:
-            failure_count += 1
-            logger.warning(f"FCM send failed for token {token[:20]}...: {e}")
+            failure_count += len(batch)
+            logger.warning(f"FCM multicast batch failed ({len(batch)} tokens): {e}")
 
     return {"success": success_count, "failure": failure_count}
 
@@ -947,7 +955,7 @@ async def generate_with_openrouter(prompt: str, system_prompt: str = None, user_
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        async with httpx.AsyncClient(timeout=60.0) as http_client:
+        async with httpx.AsyncClient(timeout=15.0) as http_client:
             response = await http_client.post(
                 f"{OPENROUTER_BASE_URL}/chat/completions",
                 headers={
@@ -1028,7 +1036,7 @@ async def generate_with_gemini(prompt: str, system_prompt: str = None, user_id: 
 
     for attempt in range(max_attempts):
         try:
-            async with httpx.AsyncClient(timeout=60.0) as http_client:
+            async with httpx.AsyncClient(timeout=15.0) as http_client:
                 response = await http_client.post(
                     url,
                     headers={"Content-Type": "application/json"},
@@ -1379,7 +1387,7 @@ async def register_user(user_data: UserCreate, request: Request, background_task
         "address": user_data.address,
         "location_city": user_data.location_city,
         "location_country": user_data.location_country,
-        "password_hash": hash_password(user_data.password),
+        "password_hash": await asyncio.to_thread(hash_password, user_data.password),
         "is_verified": False,
         "is_admin": False,
         "status": "active",
@@ -1446,7 +1454,7 @@ async def login_user(credentials: UserLogin, request: Request):
         await asyncio.sleep(delay)
 
     user = await db.users.find_one({"email": email_lower})
-    if not user or not verify_password(credentials.password, user.get("password_hash", "")):
+    if not user or not await asyncio.to_thread(verify_password, credentials.password, user.get("password_hash", "")):
         record_failed_login(identity_key)
         logger.warning(f"❌ Failed user login for {email_lower} from {client_ip}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -2330,7 +2338,7 @@ async def register_partner(partner_data: PartnerCreate, request: Request, backgr
         "name": partner_data.name,
         "email": partner_data.email.lower(),
         "phone": partner_data.phone,
-        "password_hash": hash_password(partner_data.password),
+        "password_hash": await asyncio.to_thread(hash_password, partner_data.password),
         "location_city": partner_data.location_city,
         "location_country": partner_data.location_country,
         "organization": partner_data.organization,
@@ -2418,7 +2426,7 @@ async def login_partner(credentials: PartnerLogin, request: Request):
         await asyncio.sleep(delay)
 
     partner = await db.partners.find_one({"email": email_lower})
-    if not partner or not verify_password(credentials.password, partner.get("password_hash", "")):
+    if not partner or not await asyncio.to_thread(verify_password, credentials.password, partner.get("password_hash", "")):
         record_failed_login(identity_key)
         logger.warning(f"❌ Failed partner login for {email_lower} from {client_ip}")
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -2752,16 +2760,21 @@ async def mark_prayer_as_prayed(
                 detail=f"Please spend time in prayer. You can mark this as prayed in {remaining_min} minutes."
             )
 
-    # Update prayer
-    await db.prayer_requests.update_one(
-        {"_id": prayer_id},
+    # Atomically transition to 'prayed'. The status guard means a concurrent double-tap or
+    # client retry becomes a no-op (modified_count == 0) instead of running the whole body
+    # twice — so partner stats, the submitter notification and the FCM push each fire exactly
+    # once (no double-counted stats, no duplicate pushes, no doubled LLM cost).
+    result = await db.prayer_requests.update_one(
+        {"_id": prayer_id, "assigned_partner_id": partner["_id"], "status": {"$ne": "prayed"}},
         {"$set": {
             "status": "prayed",
             "prayed_at": datetime.now(timezone.utc),
             "prayer_duration_minutes": prayer_duration_minutes,
         }}
     )
-    
+    if result.modified_count == 0:
+        raise HTTPException(status_code=400, detail="Prayer already marked as prayed")
+
     # Update partner stats
     await db.partners.update_one(
         {"_id": partner["_id"]},
@@ -2939,7 +2952,7 @@ async def login_admin(credentials: UserLogin, request: Request):
         await asyncio.sleep(delay)
 
     admin = await db.admins.find_one({"email": email_lower})
-    if not admin or not verify_password(credentials.password, admin.get("password_hash", "")):
+    if not admin or not await asyncio.to_thread(verify_password, credentials.password, admin.get("password_hash", "")):
         count = record_failed_login(identity_key, ADMIN_FAILED_LOGIN_MAX, ADMIN_FAILED_LOGIN_LOCK_DURATION)
         logger.warning(f"❌ Failed admin login attempt #{count} for {email_lower} from {client_ip}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -4216,7 +4229,7 @@ async def bulk_prayer_action(bulk: BulkPrayerAction, admin: dict = Depends(get_c
 # ==================== PUSH NOTIFICATIONS (FCM) ====================
 
 @api_router.post("/admin/push-notification")
-async def send_push_notification(notif: PushNotificationRequest, admin: dict = Depends(get_current_admin)):
+async def send_push_notification(notif: PushNotificationRequest, background_tasks: BackgroundTasks, admin: dict = Depends(get_current_admin)):
     """Send FCM push notification to users/partners."""
     check_admin_permission(admin, "manage_notifications")
 
@@ -4251,9 +4264,9 @@ async def send_push_notification(notif: PushNotificationRequest, admin: dict = D
     if not tokens:
         return {"message": "No devices with push tokens found", "sent": 0, "failed": 0, "total_tokens": 0}
 
-    result = await send_fcm_push(tokens, notif.title, notif.body, notif.data)
-
-    # Also store as in-app notification
+    # Store the in-app notification immediately, then hand the actual FCM fan-out to a
+    # background task so the admin request returns at once — a large broadcast must never
+    # block the request (which would 504 at the proxy and get re-sent, duplicating pushes).
     notif_doc = {
         "_id": str(uuid.uuid4()),
         "title": notif.title,
@@ -4264,15 +4277,17 @@ async def send_push_notification(notif: PushNotificationRequest, admin: dict = D
         "read_by": [],
         "created_by": admin["_id"],
         "created_at": datetime.now(timezone.utc),
-        "push_result": result,
+        "push_result": {"status": "queued", "total_tokens": len(tokens)},
     }
     await db.notifications.insert_one(notif_doc)
 
+    background_tasks.add_task(send_fcm_push, tokens, notif.title, notif.body, notif.data)
+
     await log_activity("push_notification_sent", "admin", admin["_id"], admin["name"], details={
-        "title": notif.title, "target": notif.target, "tokens_count": len(tokens), **result
+        "title": notif.title, "target": notif.target, "tokens_count": len(tokens),
     })
 
-    return {"message": "Push notification sent", "total_tokens": len(tokens), **result}
+    return {"message": f"Push queued to {len(tokens)} devices", "total_tokens": len(tokens), "status": "queued"}
 
 # Device token registration (called by mobile app)
 @api_router.post("/user/register-device")
@@ -4789,6 +4804,7 @@ async def create_prayer_cell(cell_data: PrayerCellCreate, admin: dict = Depends(
 async def submit_prayer(
     prayer_data: PrayerRequestCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     client_ip = get_client_ip(request)
@@ -4834,11 +4850,21 @@ Respond ONLY in this exact JSON format (no markdown, no code fences, no extra te
     "bible_reference": "Book Chapter:Verse"
 }}"""
 
-    llm_response, error = await generate_llm_response(
-        f"Prayer request from user:\n\n\"{prayer_data.content}\"",
-        system_prompt,
-        user_id
-    )
+    # Cap total LLM time well under the proxy's 120s read timeout so a Gemini brownout
+    # can never hang the request to a 504 (which the client would retry, duplicating the
+    # prayer). On timeout the hardcoded comfort_message/verse fallback below applies and
+    # the submission still succeeds.
+    try:
+        llm_response, error = await asyncio.wait_for(
+            generate_llm_response(
+                f"Prayer request from user:\n\n\"{prayer_data.content}\"",
+                system_prompt,
+                user_id,
+            ),
+            timeout=25.0,
+        )
+    except asyncio.TimeoutError:
+        llm_response, error = None, "LLM timeout"
 
     # Parse LLM response or use fallbacks
     category = "prayer"
@@ -4921,13 +4947,14 @@ Respond ONLY in this exact JSON format (no markdown, no code fences, no extra te
                 </p>
             </div>
             """
-            await send_email(
+            background_tasks.add_task(
+                send_email,
                 current_user["email"],
                 f"Your Prayer Has Been Received — {category.title()}",
                 email_body,
             )
         except Exception as e:
-            logger.error(f"Failed to send prayer confirmation email: {e}")
+            logger.error(f"Failed to queue prayer confirmation email: {e}")
 
     return ComfortResponse(
         message="Prayer submitted successfully",
@@ -4980,10 +5007,16 @@ Respond ONLY in this exact JSON format (no markdown, no code fences, no extra te
     "bible_reference": "Book Chapter:Verse"
 }}"""
 
-    llm_response, error = await generate_llm_response(
-        f"Prayer request from guest user:\n\n\"{prayer_data.content}\"",
-        system_prompt
-    )
+    try:
+        llm_response, error = await asyncio.wait_for(
+            generate_llm_response(
+                f"Prayer request from guest user:\n\n\"{prayer_data.content}\"",
+                system_prompt,
+            ),
+            timeout=25.0,
+        )
+    except asyncio.TimeoutError:
+        llm_response, error = None, "LLM timeout"
 
     category = "prayer"
     comfort_message = "Your prayer has been received. God hears every prayer and holds you in His loving care."
@@ -5103,19 +5136,54 @@ async def seed_database(admin: dict = Depends(get_current_super_admin)):
 app.include_router(api_router)
 
 # Startup/shutdown events
+async def _purge_limit_stores():
+    """Evict stale in-memory rate-limit / lockout entries every 10 min so the
+    dicts never grow without bound (bot/scanner traffic adds a key per unique
+    IP across ~6 prefixes; nothing removed them before)."""
+    while True:
+        await asyncio.sleep(600)
+        try:
+            now = time.time()
+            for k in [k for k, v in list(rate_limit_storage.items()) if not v or v[-1] < now - RATE_LIMIT_WINDOW]:
+                rate_limit_storage.pop(k, None)
+            for k in [k for k, v in list(failed_login_storage.items()) if not v or v[-1] < now - FAILED_LOGIN_WINDOW]:
+                failed_login_storage.pop(k, None)
+            for k in [k for k, until in list(login_lock_until.items()) if until < now]:
+                login_lock_until.pop(k, None)
+        except Exception as e:
+            logger.warning(f"limit-store purge error: {e}")
+
+
 @app.on_event("startup")
 async def startup_db_client():
-    # Create indexes
+    # --- Indexes: every hot query path must be covered so the DB scales with traffic.
+    # Idempotent; safe to run on every boot (and in every uvicorn worker).
     await db.users.create_index("email", unique=True)
     await db.partners.create_index("email", unique=True)
     await db.admins.create_index("email", unique=True)
-    await db.prayer_requests.create_index("user_id")
-    await db.prayer_requests.create_index("assigned_partner_id")
-    await db.prayer_requests.create_index("status")
+    # prayer_requests — largest, hottest collection (lists always sort by submitted_at desc)
+    await db.prayer_requests.create_index([("assigned_partner_id", 1), ("status", 1), ("submitted_at", -1)])
+    await db.prayer_requests.create_index([("status", 1), ("submitted_at", -1)])
+    await db.prayer_requests.create_index([("user_id", 1), ("submitted_at", -1)])
+    await db.prayer_requests.create_index("submitted_at")
+    await db.prayer_requests.create_index("prayed_at", sparse=True)
+    await db.prayer_requests.create_index("updated_at", sparse=True)
+    # analytics / dashboard date filters
+    await db.users.create_index("created_at")
+    await db.users.create_index("last_login", sparse=True)
+    await db.users.create_index("fcm_token", sparse=True)
+    await db.partners.create_index("created_at")
+    await db.partners.create_index("last_active", sparse=True)
+    await db.partners.create_index("fcm_token", sparse=True)
+    # logs & notifications
     await db.activity_logs.create_index("timestamp")
     await db.llm_logs.create_index("timestamp")
     await db.notifications.create_index("created_at")
-    logger.info("Database indexes created")
+    await db.notifications.create_index("target_ids")
+    logger.info("Database indexes ensured")
+    # (The old single-field prayer_requests indexes on user_id/assigned_partner_id/status
+    #  are now subsumed by the compound prefixes above and may be dropped in Atlas.)
+    asyncio.create_task(_purge_limit_stores())
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
