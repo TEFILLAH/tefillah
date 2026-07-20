@@ -2205,6 +2205,15 @@ async def complete_social_auth(
     email = data.email.lower()
     if email != (current_user.get("email") or "").strip().lower():
         raise HTTPException(status_code=403, detail="You can only complete your own profile.")
+    # SECURITY (cross-collection takeover): the token proves control of ONE account
+    # in ONE collection. `is_agent` selects which collection to act on, so without
+    # this guard a holder of a user token (e.g. a freshly /auth/register'd, unverified
+    # account created with a victim's email) could set is_agent=true and have the
+    # handler look up + mint a token for the victim's PARTNER record by email.
+    # Require the client flag to match the token's own role; then the email check
+    # above pins every branch to the caller's own record.
+    if data.is_agent != (current_user.get("_user_type") == "partner"):
+        raise HTTPException(status_code=403, detail="Token role does not match request.")
     phone = data.phone.strip()
     location_city = data.location_city.strip()
     location_country = data.location_country.strip()
@@ -2539,7 +2548,9 @@ async def get_partner_stats(partner: dict = Depends(get_current_partner)):
         }},
         {"$sort": {"_id": 1}}
     ]
-    weekly_data = await db.prayer_requests.aggregate(weekly_pipeline).to_list(7)
+    # to_list(7) dropped the newest bucket: a 7-day window spans up to 8 calendar dates,
+    # sorted ascending, so today fell off. The date $match already bounds the result.
+    weekly_data = await db.prayer_requests.aggregate(weekly_pipeline).to_list(None)
     
     # Monthly trend (last 30 days)
     month_ago = datetime.now(timezone.utc) - timedelta(days=30)
@@ -2551,7 +2562,7 @@ async def get_partner_stats(partner: dict = Depends(get_current_partner)):
         }},
         {"$sort": {"_id": 1}}
     ]
-    monthly_data = await db.prayer_requests.aggregate(monthly_pipeline).to_list(30)
+    monthly_data = await db.prayer_requests.aggregate(monthly_pipeline).to_list(None)
     
     return PartnerStats(
         total_prayers_received=total_received,
@@ -2637,8 +2648,11 @@ async def report_prayer_request(
     """A partner reports an objectionable/abusive prayer request. The request is
     flagged for admin review and immediately removed from the partner's queue
     (released from assignment). Required for app-store UGC moderation."""
+    # Exclude prayed: mark-prayed leaves assigned_partner_id set, so without this a
+    # partner could flag a prayer they already prayed, flipping it to "flagged" while
+    # keeping its +1 in prayers_handled — quietly shrinking completed counts / response_rate.
     prayer = await db.prayer_requests.find_one(
-        {"_id": prayer_id, "assigned_partner_id": partner["_id"]}
+        {"_id": prayer_id, "assigned_partner_id": partner["_id"], "status": {"$ne": "prayed"}}
     )
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found or not assigned to you")
@@ -3217,8 +3231,8 @@ async def get_daily_reports(
 
     # Prayers completed per day (status = prayed, using updated_at or completed_at)
     prayer_comp_pipeline = [
-        {"$match": {"status": "prayed", "updated_at": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$updated_at"}}, "count": {"$sum": 1}}},
+        {"$match": {"status": "prayed", "prayed_at": {"$gte": start_date, "$lte": end_date}}},
+        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$prayed_at"}}, "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}}
     ]
     prayer_comps = {d["_id"]: d["count"] for d in await db.prayer_requests.aggregate(prayer_comp_pipeline).to_list(100)}
@@ -3365,6 +3379,50 @@ async def update_user(user_id: str, status: Optional[str] = None, is_verified: O
             )
     return {"message": "User updated"}
 
+async def _release_partner_prayers(partner_id: str) -> None:
+    """Release a partner's assigned (unprayed, unflagged) prayers back to the pending pool.
+    Called on delete AND on disable/deactivate, so a sidelined partner's queue is never left
+    stranded and invisible to every other partner."""
+    await db.prayer_requests.update_many(
+        {"assigned_partner_id": partner_id, "status": {"$nin": ["prayed", "flagged"]}},
+        {"$set": {
+            "assigned_partner_id": None, "assigned_partner_name": None,
+            "assigned_cell_id": None, "assigned_cell_name": None,
+            "status": "pending", "assigned_at": None, "seen_by_partner": False,
+        }, "$unset": {"seen_at": ""}},
+    )
+
+
+async def _cascade_delete_user(user_id: str, profile_photo_url: Optional[str] = None) -> int:
+    """Delete a user AND its side effects so single- and bulk-delete never drift:
+    remove the avatar, scrub the user's PII from their prayer requests (partners keep the
+    content, anonymized), and detach them from notifications. Returns the deleted count."""
+    result = await db.users.delete_one({"_id": user_id})
+    if result.deleted_count == 0:
+        return 0
+    await _delete_avatar(user_id, profile_photo_url)
+    await db.prayer_requests.update_many(
+        {"user_id": user_id},
+        {"$set": {"user_id": None, "user_name": None, "user_email": None, "is_anonymous": True}},
+    )
+    await db.notifications.update_many({"target_ids": user_id}, {"$pull": {"target_ids": user_id}})
+    await db.notifications.delete_many({"target_type": "specific", "target_ids": []})
+    return result.deleted_count
+
+
+async def _cascade_delete_partner(partner: dict) -> int:
+    """Delete a partner AND release their assigned (unprayed, unflagged) prayers back to the
+    pending pool, decrement their cell's agent_count, and remove the avatar. Shared by single-
+    and bulk-delete; pass the already-fetched partner doc. Returns the deleted count."""
+    partner_id = partner["_id"]
+    await _release_partner_prayers(partner_id)
+    if partner.get("cell_id"):
+        await db.prayer_cells.update_one({"_id": partner["cell_id"]}, {"$inc": {"agent_count": -1}})
+    result = await db.partners.delete_one({"_id": partner_id})
+    await _delete_avatar(partner_id, partner.get("profile_photo_url"))
+    return result.deleted_count
+
+
 @api_router.delete("/admin/users/{user_id}")
 async def delete_user(user_id: str, admin: dict = Depends(get_current_admin)):
     # Only super admins can delete users
@@ -3374,20 +3432,8 @@ async def delete_user(user_id: str, admin: dict = Depends(get_current_admin)):
             raise HTTPException(status_code=403, detail="Insufficient permissions to delete users")
 
     target = await db.users.find_one({"_id": user_id}, {"email": 1, "name": 1, "profile_photo_url": 1})
-    result = await db.users.delete_one({"_id": user_id})
-    if result.deleted_count == 0:
+    if not await _cascade_delete_user(user_id, (target or {}).get("profile_photo_url")):
         raise HTTPException(status_code=404, detail="User not found")
-
-    await _delete_avatar(user_id, (target or {}).get("profile_photo_url"))
-
-    # Cascade — keep prayer content for partners but strip the deleted user's PII,
-    # and detach them from any notifications so no rows are left orphaned.
-    await db.prayer_requests.update_many(
-        {"user_id": user_id},
-        {"$set": {"user_id": None, "user_name": None, "user_email": None, "is_anonymous": True}}
-    )
-    await db.notifications.update_many({"target_ids": user_id}, {"$pull": {"target_ids": user_id}})
-    await db.notifications.delete_many({"target_type": "specific", "target_ids": []})
 
     if target:
         await send_account_notice(
@@ -3506,6 +3552,12 @@ async def update_partner(
     await db.partners.update_one({"_id": partner_id}, {"$set": update_fields})
     await log_activity("partner_updated", "admin", admin["_id"], admin["name"], "partner", partner_id, update_fields)
 
+    # Disabling/deactivating a partner blocks their access (get_current_partner) but left
+    # their assigned prayers stranded until an admin manually unassigned each one. Release
+    # them back to the pool, same as delete does.
+    if update_fields.get("status") == "disabled" or update_fields.get("is_active") is False:
+        await _release_partner_prayers(partner_id)
+
     # Email the partner when an admin disables or reactivates their account.
     new_status = update_fields.get("status")
     if new_status and new_status != old_status:
@@ -3576,31 +3628,7 @@ async def delete_partner(partner_id: str, admin: dict = Depends(get_current_admi
     if not partner:
         raise HTTPException(status_code=404, detail="Partner not found")
 
-    # Cascade 1 — release any prayers currently assigned to this partner (but
-    # not yet prayed, and not reported) back into the pending pool so they can be
-    # reassigned. Reported ('flagged') content is left untouched for moderation.
-    await db.prayer_requests.update_many(
-        {"assigned_partner_id": partner_id, "status": {"$nin": ["prayed", "flagged"]}},
-        {"$set": {
-            "assigned_partner_id": None,
-            "assigned_partner_name": None,
-            "assigned_cell_id": None,
-            "assigned_cell_name": None,
-            "status": "pending",
-            "assigned_at": None,
-            "seen_by_partner": False,
-        }, "$unset": {"seen_at": ""}}
-    )
-
-    # Cascade 2 — decrement the partner's prayer-cell agent count, if any.
-    if partner.get("cell_id"):
-        await db.prayer_cells.update_one(
-            {"_id": partner["cell_id"]},
-            {"$inc": {"agent_count": -1}}
-        )
-
-    await db.partners.delete_one({"_id": partner_id})
-    await _delete_avatar(partner_id, partner.get("profile_photo_url"))
+    await _cascade_delete_partner(partner)
 
     await log_activity("partner_deleted", "admin", admin["_id"], admin["name"], "partner", partner_id,
                        {"email": partner.get("email")})
@@ -3716,6 +3744,12 @@ async def assign_prayer_to_partner(
     prayer = await db.prayer_requests.find_one({"_id": prayer_id})
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found")
+    # A prayed prayer is DONE. Reassigning it (this endpoint sets status back to
+    # "assigned" without clearing prayed_at) let the new partner mark it prayed again
+    # — a second stats increment, notification, and LLM call for one prayer. unassign
+    # already rejects prayed; assign must too.
+    if prayer.get("status") == "prayed":
+        raise HTTPException(status_code=400, detail="This prayer has already been prayed and cannot be reassigned.")
 
     # Verify partner exists and is active
     partner = await db.partners.find_one({"_id": partner_id})
@@ -3804,8 +3838,11 @@ async def unassign_prayer(
 
     old_partner_id = prayer.get("assigned_partner_id")
 
+    # Status filter guards the read-then-write race: if the partner marks this prayer
+    # prayed between the check above and here, this update must NOT silently revert it
+    # to pending (which would let it be prayed + counted twice).
     await db.prayer_requests.update_one(
-        {"_id": prayer_id},
+        {"_id": prayer_id, "status": {"$nin": ["prayed", "flagged"]}},
         {
             "$set": {
                 "assigned_partner_id": None,
@@ -4100,11 +4137,9 @@ async def bulk_user_action(bulk: BulkUserAction, admin: dict = Depends(get_curre
         if not admin.get("is_super_admin", False):
             raise HTTPException(status_code=403, detail="Only Super Admin can bulk delete users")
         for uid in bulk.user_ids:
-            result = await db.users.delete_one({"_id": uid})
-            if result.deleted_count > 0:
-                results["success"] += 1
-            else:
-                results["failed"] += 1
+            prof = await db.users.find_one({"_id": uid}, {"profile_photo_url": 1})
+            deleted = await _cascade_delete_user(uid, (prof or {}).get("profile_photo_url"))
+            results["success" if deleted else "failed"] += 1
 
     elif bulk.action == "suspend":
         for uid in bulk.user_ids:
@@ -4150,8 +4185,9 @@ async def bulk_partner_action(bulk: BulkPartnerAction, admin: dict = Depends(get
         if not admin.get("is_super_admin", False):
             raise HTTPException(status_code=403, detail="Only Super Admin can bulk delete partners")
         for pid in bulk.partner_ids:
-            result = await db.partners.delete_one({"_id": pid})
-            results["success" if result.deleted_count > 0 else "failed"] += 1
+            partner = await db.partners.find_one({"_id": pid})
+            deleted = await _cascade_delete_partner(partner) if partner else 0
+            results["success" if deleted else "failed"] += 1
 
     elif bulk.action == "activate":
         for pid in bulk.partner_ids:
@@ -4161,7 +4197,11 @@ async def bulk_partner_action(bulk: BulkPartnerAction, admin: dict = Depends(get
     elif bulk.action == "deactivate":
         for pid in bulk.partner_ids:
             result = await db.partners.update_one({"_id": pid}, {"$set": {"is_active": False}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            if result.matched_count > 0:
+                await _release_partner_prayers(pid)  # don't strand their queue
+                results["success"] += 1
+            else:
+                results["failed"] += 1
 
     elif bulk.action == "verify":
         for pid in bulk.partner_ids:
@@ -4217,7 +4257,17 @@ async def bulk_prayer_action(bulk: BulkPrayerAction, admin: dict = Depends(get_c
         if not partner:
             raise HTTPException(status_code=404, detail="Partner not found")
         blocked = partner.get("blocked_users") or []
+        # Enforce capacity (single-assign does; bulk did not — one call could put 100
+        # prayers on a capacity-10 partner). Cap to the remaining slots.
+        capacity = partner.get("prayer_capacity", 10)
+        assigned_count = await db.prayer_requests.count_documents(
+            {"assigned_partner_id": partner["_id"], "status": "assigned"}
+        )
+        remaining = max(0, capacity - assigned_count)
         for pid in bulk.prayer_ids:
+            if remaining <= 0:
+                results["failed"] += 1
+                continue
             # Respect the partner's block list (mirrors single-assign): never hand a
             # blocked user's request to the partner who blocked them.
             query = {"_id": pid, "status": "pending"}
@@ -4235,7 +4285,11 @@ async def bulk_prayer_action(bulk: BulkPrayerAction, admin: dict = Depends(get_c
                     "seen_by_partner": False,
                 }, "$unset": {"seen_at": ""}}
             )
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            if result.matched_count > 0:
+                results["success"] += 1
+                remaining -= 1
+            else:
+                results["failed"] += 1
     else:
         raise HTTPException(status_code=400, detail=f"Invalid action: '{bulk.action}'. Valid: delete, assign, unassign")
 
