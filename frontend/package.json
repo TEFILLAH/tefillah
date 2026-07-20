@@ -6,12 +6,10 @@
     "start": "expo start",
     "dev": "expo start --web",
     "build": "expo export --platform web",
-    "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint",
-    "expo:custom": "node expo-start.js"
+    "lint": "expo lint"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",

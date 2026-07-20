@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, Loader2, Mail, MapPin, User } from 'lucide-react';
 import Logo from '../components/Logo';
 import CountrySelect from '../components/CountrySelect';
@@ -43,8 +43,7 @@ export default function CompleteProfilePage() {
 
   // Guard: no pending social user (no email) → nothing to complete, go to login.
   if (!email) {
-    navigate('/login', { replace: true });
-    return null;
+    return <Navigate to="/login" replace />;
   }
 
   const update = <K extends keyof typeof form>(k: K, v: string) =>

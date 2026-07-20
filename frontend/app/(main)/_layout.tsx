@@ -1,10 +1,11 @@
-import React from 'react';
-import { Tabs } from 'expo-router';
+import React, { useEffect } from 'react';
+import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../src/store/themeStore';
+import { useAuthStore } from '../../src/store/authStore';
 
 // Detail screens that should NOT appear as tabs and should hide the tab bar.
 const HIDDEN_SCREENS = [
@@ -21,6 +22,17 @@ const HIDDEN_SCREENS = [
 export default function MainTabsLayout() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { token, isInitialized } = useAuthStore();
+  const router = useRouter();
+
+  // Mirror the partner/agent layouts: if the session dies mid-run (24h JWT expiry, or a
+  // 401 that the api client cleared), bounce to landing rather than leaving the user stuck
+  // in tabs that all error into empty state. No guest path enters (main), so this is safe.
+  useEffect(() => {
+    if (isInitialized && !token) {
+      router.replace('/(auth)/landing');
+    }
+  }, [isInitialized, token]);
 
   const tap = () => Haptics.selectionAsync().catch(() => {});
 

@@ -49,7 +49,7 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
-  const load = async (isRefresh = false) => {
+  const load = async (isRefresh = false, isCancelled: () => boolean = () => false) => {
     if (isRefresh) setRefreshing(true);
     try {
       // Stats is the hard requirement; analytics is optional (an admin without
@@ -59,11 +59,13 @@ export default function DashboardPage() {
         adminApi.getStats(),
         adminApi.getAnalytics(period).catch(() => null),
       ]);
+      if (isCancelled()) return; // a newer period was selected — don't show stale data
       setStats(s);
       setAnalytics(a);
       setUpdatedAt(new Date());
       setError(null);
     } catch (err) {
+      if (isCancelled()) return;
       setError(adminErr(err, 'Could not load dashboard data.'));
     } finally {
       setLoading(false);
@@ -73,7 +75,9 @@ export default function DashboardPage() {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    load();
+    let cancelled = false;
+    load(false, () => cancelled);
+    return () => { cancelled = true; };
   }, [period]);
 
   const series = useMemo(() => {

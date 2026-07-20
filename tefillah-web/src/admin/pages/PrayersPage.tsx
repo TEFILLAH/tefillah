@@ -30,7 +30,9 @@ import {
 } from '../adminUi';
 
 const LIMIT = 20;
-const STATUS_FILTERS = ['', 'pending', 'assigned', 'prayed', 'completed'];
+// 'prayed' IS the completed state; the backend never writes 'completed', so that tab
+// always returned 0 rows (looked like nothing was ever done).
+const STATUS_FILTERS = ['', 'pending', 'assigned', 'prayed'];
 
 export default function PrayersPage() {
   const { admin } = useAdminAuth();

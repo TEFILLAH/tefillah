@@ -36,7 +36,7 @@ export default function ChangePasswordScreen() {
     }
     if (!newPassword) {
       newErrors.newPassword = t('common.passwordRequired');
-    } else if (newPassword.length < 6) {
+    } else if (newPassword.length < 8) {
       newErrors.newPassword = t('common.minPassword');
     }
     if (newPassword && currentPassword && newPassword === currentPassword) {

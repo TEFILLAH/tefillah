@@ -16,7 +16,6 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.tefilah.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "Tefillah needs camera access for your profile photo.",
         "NSPhotoLibraryUsageDescription": "Tefillah needs photo library access to select a profile photo.",
         "NSLocationWhenInUseUsageDescription": "Tefillah uses your location to connect your prayers with nearby prayer partners.",
         "ITSAppUsesNonExemptEncryption": false

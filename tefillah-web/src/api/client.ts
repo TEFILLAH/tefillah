@@ -42,7 +42,7 @@ apiClient.interceptors.response.use(
         ['/', '/login', '/signup', '/verify', '/complete-profile', '/forgot-password', '/partner/login', '/partner/signup', '/about', '/privacy', '/terms', '/delete-account'].includes(path) ||
         path.startsWith('/admin');
       if (!onPublicOrAdmin) {
-        window.location.assign('/login');
+        window.location.assign(path.startsWith('/partner') ? '/partner/login' : '/login');
       }
     }
     return Promise.reject(error);

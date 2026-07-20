@@ -205,7 +205,7 @@ export default function PartnersPage() {
                       </div>
                     </td>
                     <td className="text-gray-400">{[p.location_city, p.location_country].filter(Boolean).join(', ') || '—'}</td>
-                    <td><StatusBadge status={p.is_active ? p.status : 'inactive'} /></td>
+                    <td><StatusBadge status={p.status === 'pending_approval' ? 'pending_approval' : (p.is_active ? p.status : 'inactive')} /></td>
                     <td className="text-gray-300">{p.prayers_handled}</td>
                     <td className="text-gray-400">{fmtDate(p.created_at)}</td>
                     <td className="text-gray-400">{relTime(p.last_active)}</td>

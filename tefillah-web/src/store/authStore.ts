@@ -107,15 +107,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isInitialized: true,
       });
       get().checkSwitch();
-    } catch {
-      storage.clearAuth();
-      set({
-        user: null,
-        partner: null,
-        token: null,
-        userType: null,
-        isInitialized: true,
-      });
+    } catch (err) {
+      // Only a real 401 means the session is invalid — clear it. getMe() runs on every
+      // app load, so a transient failure (EB restart/deploy -> 502, CORS hiccup, brief
+      // offline) must NOT wipe the token and sign the user out; keep the restored session.
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 401) {
+        storage.clearAuth();
+        set({ user: null, partner: null, token: null, userType: null, isInitialized: true });
+      } else {
+        set({ isInitialized: true });
+      }
     }
   },
 
@@ -270,20 +272,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   switchAccount: async () => {
-    const res = await authAPI.switchAccount();
-    const type = (res.user_type as UserType) ?? 'user';
-    storage.setToken(res.access_token);
-    if (type) storage.setUserType(type);
-    storage.setUser(res.account as unknown as User | Partner);
-    set({
-      token: res.access_token,
-      userType: type,
-      user: type === 'user' ? (res.account as unknown as User) : null,
-      partner: type === 'partner' ? (res.account as unknown as Partner) : null,
-      error: null,
-    });
-    get().checkSwitch();
-    return type;
+    try {
+      const res = await authAPI.switchAccount();
+      const type = (res.user_type as UserType) ?? 'user';
+      storage.setToken(res.access_token);
+      if (type) storage.setUserType(type);
+      storage.setUser(res.account as unknown as User | Partner);
+      set({
+        token: res.access_token,
+        userType: type,
+        user: type === 'user' ? (res.account as unknown as User) : null,
+        partner: type === 'partner' ? (res.account as unknown as Partner) : null,
+        error: null,
+      });
+      get().checkSwitch();
+      return type;
+    } catch (err) {
+      // Surface the failure (e.g. "both accounts must be verified") instead of a silent
+      // no-op — the Header discards its own catch expecting the store to carry the error.
+      const message =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Could not switch account. Please try again.';
+      set({ error: message });
+      throw err;
+    }
   },
 
   clearError: () => set({ error: null }),
