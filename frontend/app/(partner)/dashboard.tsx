@@ -36,6 +36,8 @@ interface PrayerRequest {
   status: string;
   submitted_at: string;
   assigned_at?: string;
+  seen_at?: string;
+  seen_by_partner?: boolean;
   requester_id?: string | null;
 }
 
@@ -48,9 +50,11 @@ function buildWeek(activity: Array<{ date: string; count: number }>) {
   const out: Array<{ date: string; initial: string; count: number }> = [];
   const now = new Date();
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    out.push({ date: key, initial: d.toLocaleDateString('en-US', { weekday: 'narrow' }), count: counts[key] ?? 0 });
+    // UTC to match the backend, which groups prayed_at with UTC $dateToString — a
+    // local window dropped day-boundary prayers onto the wrong (or missing) bar.
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    out.push({ date: key, initial: d.toLocaleDateString('en-US', { weekday: 'narrow', timeZone: 'UTC' }), count: counts[key] ?? 0 });
   }
   return out;
 }
@@ -381,7 +385,20 @@ const PartnerRequestsList = ({ colors, onRefresh, initialFilter }: { colors: any
     try {
       setLoading(true);
       const data = await partnerAPI.getRequests(filter, 1, 50);
-      setRequests(data);
+      // Mark assigned requests as seen the moment the partner views them. The backend
+      // measures the 60-min prayer gate from seen_at ?? assigned_at, and the web "New"
+      // bucket only drains on seen_by_partner — mobile never called this, so mobile-first
+      // partners' requests stayed "New" forever and their gate disagreed with the server.
+      // Optimistically stamp seen_at so the local gate matches immediately; fire-and-forget.
+      const toSee = data.filter((r: PrayerRequest) => r.status === 'assigned' && !r.seen_by_partner && !r.seen_at);
+      if (toSee.length) {
+        const nowIso = new Date().toISOString();
+        setRequests(data.map((r: PrayerRequest) =>
+          r.status === 'assigned' && !r.seen_by_partner && !r.seen_at ? { ...r, seen_at: nowIso } : r));
+        toSee.forEach((r: PrayerRequest) => partnerAPI.markSeen(r.id).catch(() => {}));
+      } else {
+        setRequests(data);
+      }
     } catch (error) {
       if (__DEV__) console.error('Failed to fetch requests:', error);
     } finally {
@@ -522,8 +539,11 @@ const PartnerRequestsList = ({ colors, onRefresh, initialFilter }: { colors: any
             <Text style={[styles.requestContent, { color: colors.text }]}>{request.content}</Text>
 
             {request.status !== 'prayed' && (() => {
-              const assignedAt = request.assigned_at ? new Date(request.assigned_at).getTime() : 0;
-              const elapsed = Date.now() - assignedAt;
+              // Gate from seen_at ?? assigned_at to match the backend (which measures the
+              // hour from when the partner first saw the request, not when it was assigned).
+              const base = request.seen_at ?? request.assigned_at;
+              const baseMs = base ? new Date(base).getTime() : 0;
+              const elapsed = Date.now() - baseMs;
               const canMark = elapsed >= 3600000; // 1 hour in ms
               const remainingMin = canMark ? 0 : Math.ceil((3600000 - elapsed) / 60000);
               return (

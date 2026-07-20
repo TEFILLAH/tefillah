@@ -88,12 +88,14 @@ function buildWeek(activity: Array<{ date: string; count: number }>): WeekDay[] 
   const out: WeekDay[] = [];
   const now = new Date();
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    // UTC to match the backend, which groups prayed_at with UTC $dateToString — a
+    // local window dropped day-boundary prayers onto the wrong (or missing) bar.
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
     out.push({
       date: key,
-      label: d.toLocaleDateString('en-US', { weekday: 'short' }),
-      initial: d.toLocaleDateString('en-US', { weekday: 'narrow' }),
+      label: d.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }),
+      initial: d.toLocaleDateString('en-US', { weekday: 'narrow', timeZone: 'UTC' }),
       count: counts[key] ?? 0,
     });
   }
@@ -117,6 +119,7 @@ export default function PartnerDashboardPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [reqFilter, setReqFilter] = useState<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pending, setPending] = useState(false);
 
   const goToRequests = (filter?: string) => {
     setReqFilter(filter);
@@ -126,7 +129,7 @@ export default function PartnerDashboardPage() {
   const fetchData = useCallback(async () => {
     try {
       const [s, r] = await Promise.all([
-        partnerAPI.getStats().catch(() => null),
+        partnerAPI.getStats().catch((e: any) => { if (e?.response?.status === 403) setPending(true); return null; }),
         partnerAPI.getRequests(undefined, 1, 5).catch(() => []),
       ]);
       if (s) setStats(s as PartnerStats);
@@ -178,6 +181,17 @@ export default function PartnerDashboardPage() {
           <Menu size={20} />
         </button>
       </section>
+
+      {/* Pending-approval notice: the stats/requests calls 403 until an admin approves,
+          and those errors are swallowed — without this the partner just sees zeros. */}
+      {pending && (
+        <section className="surface-card p-4 mt-4 anim-fade-up" style={{ borderColor: 'var(--color-accent)' }}>
+          <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            <strong style={{ color: 'var(--color-accent)' }}>Your prayer-partner account is pending approval.</strong>{' '}
+            An administrator will review it shortly. Once approved, you'll be able to see and pray for requests assigned to you.
+          </p>
+        </section>
+      )}
 
       {/* Tabs */}
       <div className="mt-6 grid grid-cols-2 gap-2 anim-fade-up delay-100">

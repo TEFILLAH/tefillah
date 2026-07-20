@@ -1890,13 +1890,14 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
             profile_photo_url=current_user.get("profile_photo_url"),
             created_at=current_user["created_at"],
             last_active=current_user.get("last_active"),
-        )
+        ).model_dump() | {"user_type": "partner"}
 
     if user_type == "admin":
         return {
             "id": current_user["_id"],
             "name": current_user["name"],
             "email": current_user["email"],
+            "user_type": "admin",
             "is_super_admin": current_user.get("is_super_admin", False),
             "is_admin": True,
             "is_verified": True,
@@ -1918,7 +1919,7 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
         created_at=current_user["created_at"],
         last_login=current_user.get("last_login"),
         status=current_user.get("status", "active"),
-    )
+    ).model_dump() | {"user_type": "user"}
 
 # ==================== SOCIAL AUTH (Firebase) ====================
 

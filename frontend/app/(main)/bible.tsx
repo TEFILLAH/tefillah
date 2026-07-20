@@ -145,6 +145,15 @@ export default function BibleScreen() {
   const book = bible?.books[bookIndex];
   const chapterCount = book?.chapters.length ?? 0;
 
+  // Self-heal an out-of-range persisted chapter (corrupted prefs would otherwise render
+  // a blank page titled e.g. "Genesis 500"). Runs once the book loads; converges because
+  // the corrected chapter is <= chapterCount.
+  useEffect(() => {
+    if (book && chapterCount > 0 && chapter > chapterCount) {
+      setPosition(bookIndex, chapterCount);
+    }
+  }, [book, chapter, chapterCount, bookIndex, setPosition]);
+
   const verses = useMemo<VerseRow[]>(() => {
     const raw = book?.chapters[chapter - 1] ?? [];
     const rows: VerseRow[] = [];
