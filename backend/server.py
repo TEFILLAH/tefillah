@@ -2073,7 +2073,11 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
             "location_country": auth_data.location_country or "",
             "partner_type": "prayer_warrior",
             "is_verified": False,
-            "is_active": True,
+            # SECURITY: is_agent is client-supplied — new social partners must start
+            # pending_approval like register_partner, or ?agent=1 self-promotes to an
+            # active partner with prayer-data access (get_current_partner gates on this).
+            "is_active": False,
+            "status": "pending_approval",
             "auth_provider": firebase_user.get("provider", "social"),
             "firebase_uid": firebase_user["uid"],
             "verification_code": verification_code,
@@ -2238,7 +2242,13 @@ async def complete_social_auth(
             "_id": partner_id, "name": data.name, "email": email,
             "phone": phone, "password_hash": "",
             "location_city": location_city, "location_country": location_country,
-            "partner_type": "prayer_warrior", "is_verified": False, "is_active": True,
+            # SECURITY: social partner signup is client-driven (is_agent comes from a
+            # URL param), so it MUST land in the same pending_approval gate as
+            # register_partner — otherwise ?agent=1 self-promotes to an active partner
+            # with prayer-data access. get_current_partner (line ~702) blocks
+            # pending_approval / is_active=False.
+            "partner_type": "prayer_warrior", "is_verified": False, "is_active": False,
+            "status": "pending_approval",
             "auth_provider": "social", "verification_code": verification_code,
             "verification_expires": datetime.now(timezone.utc) + timedelta(hours=24),
             "prayers_handled": 0, "total_prayer_time_minutes": 0,
