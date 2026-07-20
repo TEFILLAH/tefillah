@@ -103,6 +103,8 @@ export default function BibleScreen() {
   const listRef = useRef<FlatList<VerseRow>>(null);
   const pendingVerse = useRef<number | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Clear a pending debounced search on unmount so runSearch can't fire setState after teardown.
+  useEffect(() => () => { if (searchTimer.current) clearTimeout(searchTimer.current); }, []);
 
   // ---- boot: hydrate prefs + annotations, pick default version ----
   useEffect(() => {

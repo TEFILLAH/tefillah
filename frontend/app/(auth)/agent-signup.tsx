@@ -131,6 +131,10 @@ export default function AgentSignUpScreen() {
         organization: formData.organization.trim() || undefined,
         partner_type: 'prayer_warrior',
       });
+      // New partners land in pending_approval and can't use the app until an admin
+      // approves them — so don't keep the session registerAsPartner persisted (it would
+      // otherwise route them into the dashboard on next launch, contradicting this message).
+      await useAuthStore.getState().logout();
       Alert.alert(
         'Interest Received',
         'Your interest has been received. Our team will get back to you soon.',
