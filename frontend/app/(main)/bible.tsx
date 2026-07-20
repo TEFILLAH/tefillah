@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -39,7 +39,8 @@ import {
   parseVerseKey,
   useAnnotations,
 } from '../../src/lib/bible/annotations';
-import { parseReference } from '../../src/lib/bible/refparse';
+import { parseReference, suggestBooks, type BookSuggestion } from '../../src/lib/bible/refparse';
+import { searchVerses } from '../../src/lib/bible/search';
 import {
   formatXrefTarget,
   getXrefTargets,
@@ -155,20 +156,24 @@ export default function BibleScreen() {
     return s;
   }, [bookmarks]);
 
-  // After a jump, scroll to the target verse once the list has data.
-  useEffect(() => {
+  // Scroll to + flash the pending target verse against the CURRENT chapter.
+  const flushPendingVerse = useCallback(() => {
     const target = pendingVerse.current;
     if (target == null || verses.length === 0) return;
     pendingVerse.current = null;
     const idx = verses.findIndex((v) => v.n === target);
-    if (idx >= 0) {
-      setHighlightVerse(target);
-      setTimeout(() => {
-        listRef.current?.scrollToIndex({ index: idx, viewPosition: 0.25, animated: true });
-      }, 250);
-      setTimeout(() => setHighlightVerse(null), 3200);
-    }
+    if (idx < 0) return;
+    setHighlightVerse(target);
+    setTimeout(() => {
+      listRef.current?.scrollToIndex({ index: idx, viewPosition: 0.25, animated: true });
+    }, 250);
+    setTimeout(() => setHighlightVerse(null), 3200);
   }, [verses]);
+
+  // Fires after a jump that actually CHANGED chapter (verses identity changes).
+  useEffect(() => {
+    flushPendingVerse();
+  }, [flushPendingVerse]);
 
   // ---- navigation ----
   const openChapter = useCallback(
@@ -184,10 +189,19 @@ export default function BibleScreen() {
 
   const jumpToRef = useCallback(
     (b: number, c: number, v?: number) => {
+      // Jumping to the chapter ALREADY open changes neither `book` nor `chapter`,
+      // so `verses` keeps its identity and the effect above never re-runs. Without
+      // this, the tap did nothing (openChapter just scrolls to top) AND the stale
+      // pendingVerse later fired against an unrelated chapter — e.g. tap
+      // "John 3:16" while in John 3, then page to John 4 and verse 16 flashes.
+      const samePlace = b === bookIndex && c === chapter;
       if (v != null) pendingVerse.current = v;
       openChapter(b, c);
+      // Safe: on the same-place path `verses` is already this chapter's array,
+      // and the 250ms scrollToIndex lands after openChapter's sync scroll-to-top.
+      if (samePlace) flushPendingVerse();
     },
-    [openChapter],
+    [openChapter, bookIndex, chapter, flushPendingVerse],
   );
 
   const goNext = useCallback(() => {
@@ -284,28 +298,25 @@ export default function BibleScreen() {
 
   const runSearch = useCallback(
     (q: string) => {
-      const needle = q.trim().toLowerCase();
+      const needle = q.trim();
       setSearched(true);
       if (!bible || needle.length < SEARCH_MIN_CHARS) {
         setHits([]);
         return;
       }
-      const found: SearchHit[] = [];
-      outer: for (let b = 0; b < bible.books.length; b++) {
-        const bk = bible.books[b];
-        for (let c = 0; c < bk.chapters.length; c++) {
-          const ch = bk.chapters[c];
-          for (let v = 0; v < ch.length; v++) {
-            if (ch[v] && ch[v].toLowerCase().includes(needle)) {
-              found.push({ bookIndex: b, bookName: bk.name, chapter: c + 1, verse: v + 1, text: ch[v] });
-              if (found.length >= SEARCH_MAX_HITS) break outer;
-            }
-          }
-        }
-      }
-      setHits(found);
+      // Ranked + Unicode-normalized (see lib/bible/search.ts): whole-word hits
+      // rank above word-initial ("faith" -> "faithful") above interior
+      // substrings, and the cap now keeps the BEST hits rather than simply the
+      // first ones the scan happened to reach.
+      setHits(searchVerses(bible, needle, SEARCH_MAX_HITS));
     },
     [bible],
+  );
+
+  // ---- book autocomplete: "mat" -> Matthew, "j" -> Joshua/Judges/John/... ----
+  const bookSuggestions = useMemo<BookSuggestion[]>(
+    () => (bible && query.trim().length >= 1 ? suggestBooks(query, bible.books, 6) : []),
+    [bible, query],
   );
 
   const onQueryChange = useCallback(
@@ -673,6 +684,26 @@ export default function BibleScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Book autocomplete — tap to jump straight to the book/chapter */}
+        {bookSuggestions.length > 0 && (
+          <View style={styles.suggestRow}>
+            {bookSuggestions.map((s) => (
+              <TouchableOpacity
+                key={s.bookIndex}
+                style={[styles.suggestChip, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                onPress={() => jumpToRef(s.bookIndex, s.chapter ?? 1, s.verse)}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="book-outline" size={13} color={colors.accent} />
+                <Text style={[styles.suggestText, { color: colors.text }]} numberOfLines={1}>
+                  {s.name}
+                  {s.chapter ? ` ${s.chapter}${s.verse ? `:${s.verse}` : ''}` : ''}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         <FlatList
           data={hits}
           keyExtractor={(h) => `${h.bookIndex}-${h.chapter}-${h.verse}`}
@@ -965,6 +996,13 @@ function Sheet({
   children: React.ReactNode;
   compact?: boolean;
 }) {
+  // app.json sets android.edgeToEdgeEnabled=true, so this Modal draws UNDERNEATH
+  // the system navigation bar. The sheet previously used a fixed paddingBottom
+  // (SPACING.xl ≈ 24-32px), which is smaller than Android's 3-button nav bar
+  // (~48dp) — so the bottom row of every sheet (e.g. the Text size controls) was
+  // covered by the nav bar and untappable. The padding must come from the real
+  // device inset, not a constant: 0 on gesture nav, ~48dp on 3-button nav.
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onBack ?? onClose}>
       <View style={styles.sheetBackdropWrap}>
@@ -973,7 +1011,11 @@ function Sheet({
           style={[
             styles.sheetBody,
             compact ? styles.sheetBodyCompact : styles.sheetBodyTall,
-            { backgroundColor: colors.background, borderColor: colors.border },
+            {
+              backgroundColor: colors.background,
+              borderColor: colors.border,
+              paddingBottom: insets.bottom + (compact ? SPACING.xl : SPACING.md),
+            },
           ]}
         >
           <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
@@ -1171,6 +1213,17 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
   },
   searchInput: { flex: 1, paddingVertical: 10, fontSize: FONTS.sizes.md },
+  suggestRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 12 },
+  suggestChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  suggestText: { fontSize: FONTS.sizes.sm, maxWidth: 160 },
   gotoRow: {
     flexDirection: 'row',
     alignItems: 'center',

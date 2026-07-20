@@ -36,3 +36,7 @@ Thumbs.db
 
 # Firebase iOS-only service files (Android google-services.json IS needed)
 GoogleService-Info.plist
+
+# Bible ingest pipeline artifacts (scripts/build-bibles.mjs) — never ship these
+.bible-build/
+.bible-cache/

@@ -21,3 +21,7 @@ yarn-error.*
 
 # local env overrides (the build's EXPO_PUBLIC_* come from EAS env, not these)
 .env*.local
+
+# Bible ingest pipeline artifacts (scripts/build-bibles.mjs) — never ship these
+.bible-build/
+.bible-cache/

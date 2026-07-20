@@ -10,7 +10,7 @@ const sections = [
   {
     title: 'Description of Service',
     content:
-      'Tefillah is a prayer request platform that connects individuals seeking prayer support with dedicated prayer partners. The service includes prayer request submission, prayer partner management, AI-generated comfort messages, and Bible verse recommendations.',
+      'Tefillah is a prayer request platform that connects individuals seeking prayer support with dedicated prayer partners. The service includes prayer request submission, prayer partner management, AI-generated comfort messages, Bible verse recommendations, and an offline Bible reader offering multiple translations with search, cross-references, bookmarks and highlights.',
   },
   {
     title: 'User Accounts',
@@ -43,9 +43,14 @@ const sections = [
       'Tefillah uses AI language models to generate comfort messages and Bible verse recommendations. These are provided for encouragement and should not be considered as professional counseling, medical advice, or theological doctrine.',
   },
   {
+    title: 'Bible Content and Third-Party Licences',
+    content:
+      'Scripture texts in Tefillah are included under public-domain or open licences and remain the property of their respective rights holders; we claim no ownership of them. The King James Version, American Standard Version, World English Bible and Telugu Old Version are public domain. The Berean Standard Bible is released under CC0. The Hindi and Telugu Indian Revised Version (IRV) texts are Copyright © Bridge Connectivity Solutions, used under Creative Commons Attribution-ShareAlike 4.0; that licence permits redistribution provided attribution is given, and any redistributed adaptation of those texts must be offered under the same licence. Cross-reference data is derived from OpenBible.info under a Creative Commons Attribution licence. "World English Bible" is a trademark of eBible.org. Translations listed as "coming soon" are not included and require a licence from their publisher.',
+  },
+  {
     title: 'Intellectual Property',
     content:
-      'The Tefillah application, including its design, code, and branding, is the property of the Tefillah team. Bible verses are sourced from publicly available translations. You may not copy, modify, or distribute any part of the application without written permission.',
+      'The Tefillah application itself — including its design, code, and branding — is the property of the Tefillah team, and you may not copy, modify, or distribute any part of the application without written permission. This does not restrict your rights to the underlying scripture texts, which are governed by their own licences described above.',
   },
   {
     title: 'Limitation of Liability',
@@ -70,5 +75,5 @@ const sections = [
 ];
 
 export default function TermsScreen() {
-  return <LegalPage title="Terms & Conditions" lastUpdated="March 15, 2026" sections={sections} />;
+  return <LegalPage title="Terms & Conditions" lastUpdated="July 16, 2026" sections={sections} />;
 }

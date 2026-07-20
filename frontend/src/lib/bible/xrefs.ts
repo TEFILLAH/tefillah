@@ -36,14 +36,21 @@ export function loadXrefs(): Promise<XrefData> {
   if (cache) return Promise.resolve(cache);
   if (loading) return loading;
   loading = (async () => {
-    const asset = Asset.fromModule(require('../../../assets/bibles/xrefs.bible'));
-    await asset.downloadAsync();
-    const raw = await FileSystem.readAsStringAsync(asset.localUri ?? asset.uri);
-    const data = JSON.parse(raw) as XrefData;
-    if (!data || typeof data.refs !== 'object') throw new Error('xrefs asset malformed');
-    cache = data;
-    loading = null;
-    return data;
+    try {
+      const asset = Asset.fromModule(require('../../../assets/bibles/xrefs.bible'));
+      await asset.downloadAsync();
+      const raw = await FileSystem.readAsStringAsync(asset.localUri ?? asset.uri);
+      const data = JSON.parse(raw) as XrefData;
+      if (!data || typeof data.refs !== 'object') throw new Error('xrefs asset malformed');
+      cache = data;
+      return data;
+    } finally {
+      // MUST clear on failure too. Previously this only ran on success, so one
+      // transient read error cached the REJECTED promise forever and every
+      // later call re-returned it — cross-references then stayed silently empty
+      // for the rest of the session with no way to recover.
+      loading = null;
+    }
   })();
   return loading;
 }

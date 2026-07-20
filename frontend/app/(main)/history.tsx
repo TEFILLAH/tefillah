@@ -4,7 +4,7 @@ import {
   RefreshControl, ActivityIndicator, Platform, Modal, ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../src/store/themeStore';
@@ -28,6 +28,11 @@ export default function HistoryScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // android.edgeToEdgeEnabled=true means the Prayer Details modal below draws
+  // UNDER the system navigation bar. A fixed paddingBottom can't cover a ~48dp
+  // 3-button nav bar, so the bottom of the modal was unreachable — the padding
+  // has to come from the real device inset (0 on gesture nav).
+  const insets = useSafeAreaInsets();
   const [prayers, setPrayers] = useState<Prayer[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -229,7 +234,12 @@ export default function HistoryScreen() {
         onRequestClose={() => setSelectedPrayer(null)}
       >
         <View style={[styles.modalContainer, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
-          <View style={[styles.modalContent, { backgroundColor: colors.background }]}>
+          <View
+            style={[
+              styles.modalContent,
+              { backgroundColor: colors.background, paddingBottom: insets.bottom + SPACING.xl },
+            ]}
+          >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>Prayer Details</Text>
               <TouchableOpacity

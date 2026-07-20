@@ -139,6 +139,70 @@ function matchBook(bookQuery: string, books: BibleBook[]): number | null {
   return null;
 }
 
+export interface BookSuggestion {
+  bookIndex: number;
+  /** Display name in the loaded version's own language/script. */
+  name: string;
+  chapters: number;
+  /** Chapter the user already typed ("mat 5" → 5), when valid for this book. */
+  chapter?: number;
+  /** Verse the user already typed ("mat 5:3" → 3), when valid. */
+  verse?: number;
+}
+
+/**
+ * Autocomplete for the search box: every book whose localized name or English
+ * alias starts with what the user typed ("mat" → Matthew, "j" → Joshua, Judges,
+ * Job, John, James, Jude …).
+ *
+ * Ranking is deterministic and canonical-order-stable:
+ *   1. exact name/alias match      ("john"  → John before 1/2/3 John)
+ *   2. localized-name prefix       (what the reader actually sees)
+ *   3. English-alias prefix        (so "mt"/"jhn" still work in hi/te)
+ * A trailing chapter/verse is preserved so "mat 5" suggests Matthew AT 5 and
+ * one tap lands on the passage instead of re-typing.
+ */
+export function suggestBooks(query: string, books: BibleBook[], limit = 8): BookSuggestion[] {
+  const q = norm(query);
+  if (!q) return [];
+
+  // Peel off a trailing chapter[:verse] so "mat 5:3" still suggests Matthew.
+  const split = splitQuery(q);
+  const bookPart = split ? norm(split.book) : q;
+  if (!bookPart) return [];
+
+  type Scored = { i: number; rank: number };
+  const scored: Scored[] = [];
+
+  for (let i = 0; i < books.length; i++) {
+    const own = norm(books[i].name);
+    const aliases = i < EN_ALIASES.length ? EN_ALIASES[i] : [];
+
+    let rank = -1;
+    if (own === bookPart || aliases.some((a) => a === bookPart)) rank = 0;
+    else if (own.startsWith(bookPart)) rank = 1;
+    else if (aliases.some((a) => a.startsWith(bookPart))) rank = 2;
+    // Last resort: the query appears inside the localized name (handles scripts
+    // where a leading honorific/prefix would otherwise block a prefix match).
+    else if (bookPart.length >= 3 && own.includes(bookPart)) rank = 3;
+
+    if (rank >= 0) scored.push({ i, rank });
+  }
+
+  scored.sort((a, b) => a.rank - b.rank || a.i - b.i);
+
+  return scored.slice(0, limit).map(({ i }) => {
+    const book = books[i];
+    const out: BookSuggestion = { bookIndex: i, name: book.name, chapters: book.chapters.length };
+    if (split && split.chapter >= 1 && split.chapter <= book.chapters.length) {
+      out.chapter = split.chapter;
+      const verseCount = book.chapters[split.chapter - 1]?.length ?? 0;
+      if (split.verse != null && split.verse >= 1 && split.verse <= verseCount) out.verse = split.verse;
+    }
+    return out;
+  });
+}
+
 export function parseReference(query: string, books: BibleBook[]): ParsedRef | null {
   const q = norm(query);
   const parts = splitQuery(q);

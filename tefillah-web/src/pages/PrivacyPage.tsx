@@ -76,14 +76,59 @@ export default function PrivacyPage() {
         <li>Share your personal data with advertisers.</li>
       </ul>
 
-      <h2>6. Data Security</h2>
+      <h2>6. The Bible Reader</h2>
+      <p>
+        The Bible is bundled inside the app, so reading works entirely offline and no
+        request is sent to us when you open a chapter. <strong>We do not track,
+        collect, or transmit what you read.</strong> Your reading position, bookmarks,
+        highlights, chosen translation and text size stay in local storage on your own
+        device — they are never uploaded to our servers and we cannot see them. Because
+        they are device-local, they are removed if you uninstall the app or clear its
+        storage, and they do not follow you to a new device.
+      </p>
+
+      <h2>7. Bible Content, Licensing and Attribution</h2>
+      <p>
+        Scripture texts are included under public-domain or open licences and remain the
+        property of their respective rights holders; we claim no ownership of them.
+      </p>
+      <ul>
+        <li>
+          King James Version, American Standard Version, World English Bible and the
+          Telugu Old Version — public domain. “World English Bible” is a trademark of
+          eBible.org.
+        </li>
+        <li>Berean Standard Bible — released under CC0 by Berean Bible / Bible Hub.</li>
+        <li>
+          Hindi and Telugu Indian Revised Version (IRV) — Copyright © Bridge
+          Connectivity Solutions, used under{' '}
+          <a
+            href="https://creativecommons.org/licenses/by-sa/4.0/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            CC BY-SA 4.0
+          </a>
+          .
+        </li>
+        <li>
+          Cross-reference data — derived from OpenBible.info, used under a Creative
+          Commons Attribution licence.
+        </li>
+      </ul>
+      <p>
+        Translations shown in the app as “coming soon” (such as ESV, NIV and NKJV) are
+        not included and would require a licence from their publishers.
+      </p>
+
+      <h2>8. Data Security</h2>
       <p>
         All traffic is encrypted in transit over HTTPS. Passwords are hashed and
         never stored in plain text. Access to prayer content is restricted, logged,
         and limited to the minimum required to operate the service.
       </p>
 
-      <h2>7. Your Rights</h2>
+      <h2>9. Your Rights</h2>
       <p>
         You can delete your account and associated data yourself at any time from{' '}
         <strong>Menu → Profile Settings → Delete account</strong> in the app or on the
@@ -96,7 +141,7 @@ export default function PrivacyPage() {
         your request within 30 days, except where retention is required by law.
       </p>
 
-      <h2>8. Contact Us</h2>
+      <h2>10. Contact Us</h2>
       <p>
         Questions about this policy or how your data is handled can be sent to{' '}
         <a href="mailto:admin@tefillah.in">admin@tefillah.in</a> and we will

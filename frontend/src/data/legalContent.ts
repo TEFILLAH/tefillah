@@ -40,9 +40,14 @@ export const termsContent = [
       'Tefillah uses AI language models to generate comfort messages and Bible verse recommendations. These are provided for encouragement and should not be considered as professional counseling, medical advice, or theological doctrine.',
   },
   {
+    title: 'Bible Content and Third-Party Licences',
+    content:
+      'Scripture texts in Tefillah are included under public-domain or open licences and remain the property of their respective rights holders; we claim no ownership of them. The King James Version, American Standard Version, World English Bible and Telugu Old Version are public domain. The Berean Standard Bible is released under CC0. The Hindi and Telugu Indian Revised Version (IRV) texts are Copyright © Bridge Connectivity Solutions, used under Creative Commons Attribution-ShareAlike 4.0; that licence permits redistribution provided attribution is given, and any redistributed adaptation of those texts must be offered under the same licence. Cross-reference data is derived from OpenBible.info under a Creative Commons Attribution licence. "World English Bible" is a trademark of eBible.org. Translations listed as "coming soon" are not included and require a licence from their publisher.',
+  },
+  {
     title: 'Intellectual Property',
     content:
-      'The Tefillah application, including its design, code, and branding, is the property of the Tefillah team. Bible verses are sourced from publicly available translations. You may not copy, modify, or distribute any part of the application without written permission.',
+      'The Tefillah application itself — including its design, code, and branding — is the property of the Tefillah team, and you may not copy, modify, or distribute any part of the application without written permission. This does not restrict your rights to the underlying scripture texts, which are governed by their own licences described above.',
   },
   {
     title: 'Limitation of Liability',
@@ -81,6 +86,16 @@ export const privacyContent = [
     title: 'Prayer Request Privacy',
     content:
       'Prayer requests submitted anonymously will never have your identity disclosed to prayer partners. Non-anonymous requests may include your name to prayer partners for personalized prayer. All prayer content is treated as confidential and is never shared publicly or used for marketing purposes.',
+  },
+  {
+    title: 'Bible Reading Data',
+    content:
+      'The Bible is bundled inside the app, so reading works fully offline and no network request is made when you open a chapter. We do not track, collect, or transmit what you read. Your reading position, bookmarks, highlights, chosen translation and text size are stored only in local storage on your own device — they are never uploaded to our servers and are not visible to us. Because this data is device-local, it is removed if you uninstall the app or clear its storage, and it does not transfer to a new device.',
+  },
+  {
+    title: 'Bible Content, Licensing and Attribution',
+    content:
+      'Scripture texts included in the app are used under public-domain or open licences, and we do not claim ownership of them. King James Version, American Standard Version, World English Bible and the Telugu Old Version are in the public domain. The Berean Standard Bible is released under CC0 by the Berean Bible / Bible Hub. The Hindi and Telugu Indian Revised Version (IRV) texts are Copyright © Bridge Connectivity Solutions and are used under the Creative Commons Attribution-ShareAlike 4.0 licence (creativecommons.org/licenses/by-sa/4.0/). Cross-reference data is derived from OpenBible.info and used under the Creative Commons Attribution licence. Translations shown as "coming soon" (such as ESV, NIV and NKJV) are not included in the app and require a publisher licence.',
   },
   {
     title: 'Data Storage and Security',
