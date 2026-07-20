@@ -146,6 +146,11 @@ rate_limit_storage: Dict[str, List[float]] = defaultdict(list)
 RATE_LIMIT_WINDOW = 60  # seconds
 RATE_LIMIT_MAX_REQUESTS = 20  # requests per window (tightened from 30)
 AUTH_RATE_LIMIT = 5  # auth attempts per window
+# Total LLM-backed requests per minute across ALL clients — a hard cost backstop on
+# Gemini spend that holds even if the per-IP throttle is bypassed via X-Forwarded-For
+# spoofing (get_client_ip trusts the proxy chain; see its note). Generous for launch
+# traffic; tune via env if real usage approaches it.
+GLOBAL_LLM_RATE_LIMIT = int(os.environ.get("GLOBAL_LLM_RATE_LIMIT", "120"))
 
 # Per-identity failed-login tracking (brute-force / credential stuffing defense)
 failed_login_storage: Dict[str, List[float]] = defaultdict(list)
@@ -280,7 +285,18 @@ def check_email_action_limit(email: str, action: str) -> bool:
     return True
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address"""
+    """Get client IP address.
+
+    SECURITY / KNOWN LIMITATION: this returns the LEFTMOST X-Forwarded-For entry, which
+    is client-controlled — CloudFront *appends* the viewer IP, so an attacker can prepend
+    a fake value and land in a fresh per-IP rate-limit bucket every request. The correct
+    fix is to take the Nth-from-RIGHT entry, where N = the number of trusted appending
+    proxies. That count is deployment-specific and CHANGED this session when the EB env was
+    converted to load-balanced (chain is now CloudFront -> LB -> nginx -> uvicorn), so it
+    must be VERIFIED against the live X-Forwarded-For before hardcoding — a wrong N collapses
+    all users onto one proxy IP and 429s everyone. Until then, the cost-critical path is
+    protected by the deployment-independent GLOBAL_LLM_RATE_LIMIT backstop above.
+    """
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -1164,8 +1180,6 @@ if not ALLOWED_ORIGINS or ALLOWED_ORIGINS == [""]:
         "https://www.tefillah.in",
         "https://app.tefillah.in",
         "https://admin.tefillah.in",
-        "https://admin-panel-two-sable.vercel.app",
-        "https://admin-panel-alpha-bay.vercel.app",
     ]
 
 app.add_middleware(
@@ -1329,6 +1343,8 @@ async def generate_bible_verse(request: Request, language: str = "en"):
     import random
 
     client_ip = get_client_ip(request)
+    if not check_rate_limit("__global_llm__", GLOBAL_LLM_RATE_LIMIT):
+        raise HTTPException(status_code=429, detail="The service is busy right now. Please try again in a moment.")
     if not check_rate_limit(f"verse:{client_ip}", 30):
         raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
 
@@ -1950,12 +1966,8 @@ async def verify_firebase_token(token: str) -> Optional[dict]:
     # Method 1: Verify via Google's secure token endpoint (recommended)
     try:
         async with httpx.AsyncClient(timeout=10.0) as http_client:
-            response = await http_client.get(
-                f"https://www.googleapis.com/identitytoolkit/v3/relyingparty/getAccountInfo",
-                params={"key": os.environ.get("FIREBASE_WEB_API_KEY", "")},
-                headers={"Content-Type": "application/json"},
-            )
-            # Use the simpler tokeninfo endpoint instead
+            # accounts:lookup does the real project-scoped verification. (A prior
+            # getAccountInfo GET here was dead — its response was overwritten immediately.)
             response = await http_client.post(
                 f"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={os.environ.get('FIREBASE_WEB_API_KEY', '')}",
                 json={"idToken": token},
@@ -2206,15 +2218,6 @@ async def complete_social_auth(
     email = data.email.lower()
     if email != (current_user.get("email") or "").strip().lower():
         raise HTTPException(status_code=403, detail="You can only complete your own profile.")
-    # SECURITY (cross-collection takeover): the token proves control of ONE account
-    # in ONE collection. `is_agent` selects which collection to act on, so without
-    # this guard a holder of a user token (e.g. a freshly /auth/register'd, unverified
-    # account created with a victim's email) could set is_agent=true and have the
-    # handler look up + mint a token for the victim's PARTNER record by email.
-    # Require the client flag to match the token's own role; then the email check
-    # above pins every branch to the caller's own record.
-    if data.is_agent != (current_user.get("_user_type") == "partner"):
-        raise HTTPException(status_code=403, detail="Token role does not match request.")
     phone = data.phone.strip()
     location_city = data.location_city.strip()
     location_country = data.location_country.strip()
@@ -2222,6 +2225,14 @@ async def complete_social_auth(
     if data.is_agent:
         existing = await db.partners.find_one({"email": email})
         if existing:
+            # SECURITY (cross-collection takeover): minting a token for an ALREADY-EXISTING
+            # partner requires a partner token. Otherwise a user-token holder who registered
+            # with a victim partner's email could adopt the victim's partner account. New-
+            # partner CREATION (the else branch) is a legitimate self-signup from a user token
+            # — the email is already pinned to the caller above, and new partners land in
+            # pending_approval regardless.
+            if current_user.get("_user_type") != "partner":
+                raise HTTPException(status_code=403, detail="Sign in as a prayer partner to update a partner account.")
             # Update partner with all required info
             update = {
                 "name": data.name,
@@ -2282,6 +2293,10 @@ async def complete_social_auth(
         address = (data.address or "").strip() or None
         existing = await db.users.find_one({"email": email})
         if existing:
+            # Mirror of the partner guard: adopting an EXISTING user requires a user token,
+            # so a partner-token holder can't take over a same-email user account.
+            if current_user.get("_user_type") == "partner":
+                raise HTTPException(status_code=403, detail="This email already has an account.")
             update = {
                 "name": data.name,
                 "phone": phone,
@@ -3983,7 +3998,7 @@ async def export_data(data_type: str, export_format: str = Query("json", alias="
         if not data:
             return {"data": "", "format": "csv"}
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=data[0].keys(), extrasaction='ignore')
+        writer = csv.DictWriter(output, fieldnames=list({k for row in data for k in row}), extrasaction='ignore')
         writer.writeheader()
         writer.writerows(data)
         return {"data": output.getvalue(), "format": "csv"}
@@ -4028,7 +4043,7 @@ async def export_csv_download(data_type: str, admin: dict = Depends(get_current_
         )
 
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=data[0].keys(), extrasaction='ignore')
+    writer = csv.DictWriter(output, fieldnames=list({k for row in data for k in row}), extrasaction='ignore')
     writer.writeheader()
     writer.writerows(data)
 
@@ -4396,6 +4411,11 @@ async def update_user_profile(
     current_user: dict = Depends(get_current_user),
 ):
     """Update the current user's profile. Changing the email is staged until the new address is confirmed."""
+    # This endpoint only manages USER records. A partner/admin token (reachable via
+    # switch-account) would otherwise update_one 0 rows and then dereference a None
+    # find_one -> 500 (and fire a stray email-change confirmation). Reject cleanly.
+    if current_user.get("_user_type") != "user":
+        raise HTTPException(status_code=403, detail="This endpoint is for user accounts.")
     updates: dict = {}
     if data.name is not None:
         updates["name"] = data.name.strip()
@@ -4882,6 +4902,8 @@ async def submit_prayer(
     current_user: dict = Depends(get_current_user)
 ):
     client_ip = get_client_ip(request)
+    if not check_rate_limit("__global_llm__", GLOBAL_LLM_RATE_LIMIT):
+        raise HTTPException(status_code=429, detail="The service is busy right now. Please try again in a moment.")
     if not check_rate_limit(f"prayer:{client_ip}", 5):
         raise HTTPException(status_code=429, detail="Too many submissions. Please try again later.")
     
@@ -5042,6 +5064,8 @@ Respond ONLY in this exact JSON format (no markdown, no code fences, no extra te
 @api_router.post("/prayer/guest-submit", response_model=ComfortResponse)
 async def submit_guest_prayer(prayer_data: PrayerRequestCreate, request: Request):
     client_ip = get_client_ip(request)
+    if not check_rate_limit("__global_llm__", GLOBAL_LLM_RATE_LIMIT):
+        raise HTTPException(status_code=429, detail="The service is busy right now. Please try again in a moment.")
     if not check_rate_limit(f"guest_prayer:{client_ip}", 3):
         raise HTTPException(status_code=429, detail="Too many submissions. Please try again later.")
     
