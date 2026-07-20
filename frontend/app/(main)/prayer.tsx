@@ -106,6 +106,11 @@ export default function PrayerScreen() {
           bibleReference: response.bible_reference,
         },
       });
+      // This is a Tabs screen — it stays mounted after navigating. Without resetting
+      // here, isSubmitting stays true and the submit button is a disabled spinner
+      // forever, so a second prayer can never be submitted until the app is killed.
+      setIsSubmitting(false);
+      setContent('');
     } catch (error: any) {
       showAlert(t('prayer.submissionFailed'), error.response?.data?.detail || 'Please try again later.');
       setIsSubmitting(false);

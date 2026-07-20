@@ -591,6 +591,9 @@ const PartnerProfile = ({ colors, user }: { colors: any; user: any }) => {
     setSaving(true);
     try {
       await partnerAPI.updateProfile({ name, phone });
+      // Pull the saved values back into the store, else the read-only view + header
+      // keep showing the old name/phone until re-login.
+      await useAuthStore.getState().refreshUser();
       showAlert('Success', 'Profile updated successfully');
       setEditing(false);
     } catch (error: any) {

@@ -116,6 +116,10 @@ export default function BibleScreen() {
     }
   }, [hydrated, versionId, language, setVersion]);
 
+  // Retry must re-run the loader even for the SAME versionId — setVersion(sameId) is a
+  // no-op so the old button was dead. Bumping this nonce (in the effect deps) forces it.
+  const [retryNonce, setRetryNonce] = useState(0);
+
   // ---- load the selected translation ----
   useEffect(() => {
     if (!versionId) return;
@@ -135,7 +139,7 @@ export default function BibleScreen() {
     return () => {
       cancelled = true;
     };
-  }, [versionId]);
+  }, [versionId, retryNonce]);
 
   const meta = versionId ? getVersionMeta(versionId) : undefined;
   const book = bible?.books[bookIndex];
@@ -447,7 +451,7 @@ export default function BibleScreen() {
           <Text style={[styles.centerText, { color: colors.textSecondary }]}>{t('bible.failed')}</Text>
           <TouchableOpacity
             style={[styles.retryBtn, { backgroundColor: colors.accent }]}
-            onPress={() => versionId && setVersion(versionId)}
+            onPress={() => setRetryNonce((n) => n + 1)}
             activeOpacity={0.8}
           >
             <Text style={[styles.retryText, { color: colors.buttonPrimaryText }]}>{t('bible.retry')}</Text>

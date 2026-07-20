@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   RefreshControl, ActivityIndicator, Platform, Modal, ScrollView,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
@@ -50,7 +50,9 @@ export default function HistoryScreen() {
     }
   };
 
-  useEffect(() => { fetchPrayers(); }, []);
+  // Refetch on focus, not once per session — this is a mounted Tabs screen, so a
+  // prayer submitted after first load was missing until manual pull-to-refresh.
+  useFocusEffect(useCallback(() => { fetchPrayers(); }, []));
 
   const onRefresh = () => {
     setRefreshing(true);

@@ -45,6 +45,12 @@ apiClient.interceptors.response.use(
       try {
         await secureStorage.removeItem('auth_token');
         await secureStorage.removeItem('user_type');
+        // Also reset the in-memory store, otherwise the session is a zombie: JWTs
+        // expire after 24h with no refresh, and every screen keeps rendering stale
+        // data (errors swallowed) while token is still set. logout() is a local
+        // reset (no server call). Lazy require avoids the store<->client import cycle.
+        const { useAuthStore } = require('../store/authStore');
+        await useAuthStore.getState().logout();
       } catch {
         // ignore
       }
