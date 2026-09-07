@@ -110,7 +110,15 @@ _AVATAR_EXT = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'i
 
 try:
     import boto3 as _boto3
-except ImportError:  # pragma: no cover
+except Exception as _boto3_err:  # pragma: no cover
+    # Deliberately broader than ImportError. S3 avatars are OPTIONAL, but a
+    # partially-installed or corrupted boto3 raises OSError/UnicodeDecodeError
+    # rather than ImportError, which would take the ENTIRE API down at import
+    # time instead of just disabling avatar uploads. Observed for real:
+    # WinError 1392 on a corrupted site-packages/botocore.
+    logging.getLogger(__name__).warning(
+        "boto3 unavailable (%s: %s) — S3 avatar upload disabled",
+        type(_boto3_err).__name__, _boto3_err)
     _boto3 = None
 
 _s3_client = None
@@ -1922,6 +1930,12 @@ class SocialAuthRequest(BaseModel):
     phone: Optional[str] = None
     location_city: Optional[str] = None
     location_country: Optional[str] = None
+    # Sign in with Apple returns the user's name ONCE, to the client, on the
+    # first authorization only -- it is never in the identity token. The client
+    # forwards it here so the account is not created as "abc123xyz" (the prefix
+    # of a private-relay address). Untrusted display text: length-capped, and
+    # used ONLY when the verified token carries no name of its own.
+    full_name: Optional[str] = Field(None, max_length=100)
 
 class SocialAuthCompleteRequest(BaseModel):
     email: EmailStr
@@ -1935,10 +1949,124 @@ class SocialAuthCompleteRequest(BaseModel):
 # Firebase Configuration
 FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID', 'tefillah-2283c')
 
+# ---------------------- Sign in with Apple ----------------------
+# Apple's identity token is a plain RS256 JWT signed by Apple, NOT a Firebase
+# token, so neither of the two methods below can validate it. We verify it
+# directly against Apple's published keys instead of routing it through
+# Firebase: that avoids bootstrapping Firebase Auth on native (it is currently
+# web-only) and keeps every verifier in one auditable place.
+APPLE_ISSUER = "https://appleid.apple.com"
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+
+# Allowed audiences. Native iOS tokens carry the BUNDLE ID; web tokens carry the
+# Service ID. Both are configured per-environment; there is no default, because
+# accepting a token minted for someone else's app would be an auth bypass.
+APPLE_BUNDLE_ID = os.environ.get("APPLE_BUNDLE_ID", "")
+APPLE_SERVICE_ID = os.environ.get("APPLE_SERVICE_ID", "")
+
+# Apple rotates its signing keys, so the JWKS is cached with a TTL and refetched
+# immediately when a token presents an unknown `kid` (rotation mid-cache).
+_apple_jwks: dict = {"keys": [], "fetched_at": 0.0}
+APPLE_JWKS_TTL_SECONDS = 3600
+
+
+async def _get_apple_keys(force_refresh: bool = False) -> list:
+    now = datetime.now(timezone.utc).timestamp()
+    fresh = (now - _apple_jwks["fetched_at"]) < APPLE_JWKS_TTL_SECONDS
+    if _apple_jwks["keys"] and fresh and not force_refresh:
+        return _apple_jwks["keys"]
+    async with httpx.AsyncClient(timeout=10.0) as http_client:
+        resp = await http_client.get(APPLE_JWKS_URL)
+        resp.raise_for_status()
+        _apple_jwks["keys"] = resp.json().get("keys", [])
+        _apple_jwks["fetched_at"] = now
+    return _apple_jwks["keys"]
+
+
+async def verify_apple_token(token: str) -> Optional[dict]:
+    """Fully verify an Apple identity token; None if it is not trustworthy.
+
+    Checks the RS256 signature against Apple's JWKS, plus issuer, audience and
+    expiry. Returns the same shape as the Firebase/Google verifiers so
+    /auth/social does not care which provider was used.
+
+    NOTE: Apple never puts the user's NAME in this token — it is returned once,
+    by the client, on the FIRST authorization only. The caller supplies it via
+    SocialAuthRequest.full_name; here `name` is always "".
+    """
+    allowed_aud = {a for a in (APPLE_BUNDLE_ID, APPLE_SERVICE_ID) if a}
+    if not allowed_aud:
+        logger.error("No APPLE_BUNDLE_ID/APPLE_SERVICE_ID configured — refusing Apple token (fail closed)")
+        return None
+
+    try:
+        header = jwt.get_unverified_header(token)
+        kid, alg = header.get("kid"), header.get("alg")
+        if alg != "RS256":                       # Apple only ever signs RS256
+            logger.warning(f"Apple token unexpected alg={alg!r}")
+            return None
+
+        keys = await _get_apple_keys()
+        jwk = next((k for k in keys if k.get("kid") == kid), None)
+        if jwk is None:                          # key rotated since we cached
+            keys = await _get_apple_keys(force_refresh=True)
+            jwk = next((k for k in keys if k.get("kid") == kid), None)
+        if jwk is None:
+            logger.warning(f"Apple token kid={kid!r} not present in Apple's JWKS")
+            return None
+
+        from jwt.algorithms import RSAAlgorithm   # needs `cryptography`
+        public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
+
+        claims = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience=list(allowed_aud),
+            issuer=APPLE_ISSUER,
+            options={"require": ["exp", "iat", "sub"]},
+        )
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"Apple token rejected: {type(e).__name__}: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Apple token verification error: {type(e).__name__}: {e}")
+        return None
+
+    email = (claims.get("email") or "").lower()
+    if not email:
+        # Every Sign in with Apple identity token carries an email (real, or an
+        # @privaterelay.appleid.com alias). Without one we cannot key an account,
+        # so refuse rather than create a broken row.
+        logger.warning("Apple token carried no email — rejecting")
+        return None
+
+    verified = claims.get("email_verified")
+    return {
+        "uid": claims["sub"],                    # stable per (user, team)
+        "email": email,
+        "name": "",                              # see docstring
+        "email_verified": verified is True or verified == "true",
+        "provider": "apple.com",                 # matches Firebase's providerId
+        "is_private_email": claims.get("is_private_email") in (True, "true"),
+    }
+
+
 async def verify_firebase_token(token: str) -> Optional[dict]:
     """Verify Firebase ID token using Google's public token verification endpoint.
     Falls back to manual JWT decode if the online verification is unavailable."""
     import base64
+
+    # Method 0: Sign in with Apple. The issuer is read WITHOUT verification, and
+    # is used ONLY to route to the right validator -- verify_apple_token then
+    # checks signature/aud/iss/exp properly, so an attacker cannot gain anything
+    # by claiming to be Apple. Routing first also avoids two pointless network
+    # round-trips to Google for a token neither Google method could ever accept.
+    try:
+        if jwt.decode(token, options={"verify_signature": False}).get("iss") == APPLE_ISSUER:
+            return await verify_apple_token(token)
+    except Exception:
+        pass    # not a decodable JWT -- fall through to the existing methods
 
     # Method 1: Verify via Google's secure token endpoint (recommended)
     try:
@@ -2020,7 +2148,11 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
     email = firebase_user["email"].lower()
-    name = firebase_user.get("name") or email.split("@")[0]
+    # Provider-verified name wins; then the client-supplied one (Apple's
+    # first-authorization name); then the email prefix as a last resort.
+    name = (firebase_user.get("name")
+            or (auth_data.full_name or "").strip()
+            or email.split("@")[0])
 
     if auth_data.is_agent:
         # Check if partner already exists
