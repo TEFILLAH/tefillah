@@ -174,6 +174,23 @@ if (isNative && Platform.OS === 'ios') {
   }
 }
 
+/**
+ * Apple's OWN button component, re-exported through this module's lazy require
+ * so Android/web never touch the native module.
+ *
+ * Use this rather than a hand-rolled button: Apple's HIG requires the official
+ * logo asset and one of their approved, Apple-localized titles ("Sign in with
+ * Apple" / "Sign up with Apple" / "Continue with Apple"). A custom button with
+ * an icon-font glyph and the bare word "Apple" — transliterated in hi/te — is a
+ * trademark and guideline-4.8 risk on the exact button that exists to satisfy
+ * guideline 4.8. The native control is compliant by construction.
+ *
+ * Null off iOS; always render behind isAppleSignInAvailable().
+ */
+export const AppleAuthButton = AppleAuthRef?.AppleAuthenticationButton ?? null;
+export const AppleAuthButtonType = AppleAuthRef?.AppleAuthenticationButtonType ?? null;
+export const AppleAuthButtonStyle = AppleAuthRef?.AppleAuthenticationButtonStyle ?? null;
+
 export type AppleSignInResult = {
   /** Apple's identity token (an RS256 JWT). Sent to the backend verbatim. */
   identityToken: string;

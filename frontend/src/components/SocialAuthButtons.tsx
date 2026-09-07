@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
-import { AntDesign, FontAwesome } from '@expo/vector-icons';
+import { AntDesign } from '@expo/vector-icons';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../store/themeStore';
@@ -10,6 +10,9 @@ import {
   signInWithGoogle,
   signInWithApple,
   isAppleSignInAvailable,
+  AppleAuthButton,
+  AppleAuthButtonType,
+  AppleAuthButtonStyle,
 } from '../lib/firebase';
 import type { SocialAuthMeta } from '../lib/socialAuth';
 import { FONTS, SPACING, BORDER_RADIUS } from '../constants/theme';
@@ -63,7 +66,7 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
   // Sign in with Apple exists on iOS only (ASAuthorization has no Android or
   // web equivalent), so the button is not rendered at all elsewhere rather
   // than shown disabled — a dead button is worse than no button.
-  const [appleReady, setAppleReady] = useState(false);
+  const [appleReady, setAppleReady] = useState(Platform.OS === 'ios' && !!AppleAuthButton);
   useEffect(() => {
     let active = true;
     isAppleSignInAvailable().then((ok) => {
@@ -99,6 +102,10 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
   };
 
   const handleApplePress = async () => {
+    // Apple's native button has no `disabled` prop, so the re-entrancy guard
+    // that Google gets from `disabled={isDisabled}` has to live here instead.
+    if (isLoading || signingIn !== null) return;
+
     setSigningIn('apple');
     try {
       const result = await signInWithApple();
@@ -110,9 +117,10 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
         });
       }
     } catch (error: any) {
-      if (error.message && !error.message.includes('cancel')) {
-        showAlert('Sign-In Failed', error.message || 'Apple sign-in failed');
-      }
+      // signInWithApple already returns null for cancels, so anything reaching
+      // here is a real failure. Alert unconditionally: gating on error.message
+      // meant an error without one produced NO feedback at all.
+      showAlert('Sign-In Failed', error?.message || 'Apple sign-in failed');
     } finally {
       setSigningIn(null);
     }
@@ -120,12 +128,6 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
 
   const isDisabled = isLoading || signingIn !== null;
 
-  // Apple's Human Interface Guidelines: black button on light backgrounds,
-  // white on dark. Both use the SAME socialButton style as Google so the two
-  // are identical in size and weight — App Store guideline 4.8 requires Apple
-  // to be presented no less prominently than other sign-in options.
-  const appleBg = isDark ? '#ffffff' : '#000000';
-  const appleFg = isDark ? '#000000' : '#ffffff';
 
   return (
     <Animated.View entering={FadeIn.duration(500)} style={styles.container}>
@@ -138,6 +140,19 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
       </View>
 
       <View style={styles.buttonsContainer}>
+        {/* Apple FIRST: the HIG asks for Sign in with Apple to lead the
+            list of sign-in options, and in an LTR row the first child is the
+            more prominent slot. Sizes are identical either way. */}
+        {appleReady && AppleAuthButton && (
+          <AppleAuthButton
+            buttonType={AppleAuthButtonType.SIGN_IN}
+            buttonStyle={isDark ? AppleAuthButtonStyle.WHITE : AppleAuthButtonStyle.BLACK}
+            cornerRadius={BORDER_RADIUS.md}
+            style={styles.appleButton}
+            onPress={handleApplePress}
+          />
+        )}
+
         <TouchableOpacity
           style={[
             styles.socialButton,
@@ -168,37 +183,6 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
             </>
           )}
         </TouchableOpacity>
-
-        {appleReady && (
-          <TouchableOpacity
-            style={[
-              styles.socialButton,
-              {
-                backgroundColor: appleBg,
-                borderColor: appleBg,
-                shadowColor: isDark ? '#000' : '#1a1a1a',
-              },
-            ]}
-            onPress={handleApplePress}
-            disabled={isDisabled}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel={t('common.apple')}
-          >
-            {signingIn === 'apple' ? (
-              <ActivityIndicator size="small" color={appleFg} />
-            ) : (
-              <>
-                {/* FontAwesome is the only bundled pack with an Apple glyph —
-                    AntDesign has none, so it would render an empty box. */}
-                <FontAwesome name="apple" size={20} color={appleFg} />
-                <Text style={[styles.socialButtonText, { color: appleFg }]}>
-                  {t('common.apple')}
-                </Text>
-              </>
-            )}
-          </TouchableOpacity>
-        )}
       </View>
 
       {!googleReady && (
@@ -233,6 +217,14 @@ const styles = StyleSheet.create({
   buttonsContainer: {
     flexDirection: 'row',
     gap: SPACING.md,
+  },
+  // Apple's native button is a native view, so it needs an explicit height.
+  // Google's rendered height = 28 (the 18pt glyph in its 28pt chip)
+  // + 28 (paddingVertical 14 x2) + 2 (borderWidth x2) = 58. Matching it keeps
+  // the two visually equal, which guideline 4.8 requires.
+  appleButton: {
+    flex: 1,
+    height: 58,
   },
   socialButton: {
     flex: 1,

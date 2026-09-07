@@ -14,14 +14,22 @@ import Animated, {
   Easing,
   interpolate,
 } from 'react-native-reanimated';
-import { Ionicons, FontAwesome } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { useLanguageStore } from '../../src/store/languageStore';
 import { useTheme } from '../../src/store/themeStore';
 import { ThemeToggle } from '../../src/components/ThemeToggle';
 import { publicAPI } from '../../src/api/client';
-import { isFirebaseConfigured, signInWithGoogle, signInWithApple, isAppleSignInAvailable } from '../../src/lib/firebase';
+import {
+  isFirebaseConfigured,
+  signInWithGoogle,
+  signInWithApple,
+  isAppleSignInAvailable,
+  AppleAuthButton,
+  AppleAuthButtonType,
+  AppleAuthButtonStyle,
+} from '../../src/lib/firebase';
 import { handleSocialAuthFlow } from '../../src/lib/socialAuth';
 import { showAlert } from '../../src/lib/alerts';
 import { FONTS, SPACING, BORDER_RADIUS } from '../../src/constants/theme';
@@ -92,11 +100,13 @@ export default function LandingScreen() {
   const { language } = useLanguageStore();
   const [bibleVerse, setBibleVerse] = useState({ verse: '', reference: '' });
   const [isLoadingVerse, setIsLoadingVerse] = useState(true);
-  const [socialLoading, setSocialLoading] = useState(false);
+  // Per-provider, not a single boolean: a shared flag put a spinner on the
+  // Apple button while Google was signing in, and vice versa.
+  const [socialLoading, setSocialLoading] = useState<'google' | 'apple' | null>(null);
 
   // iOS only: ASAuthorization has no Android/web equivalent, so the button is
   // omitted entirely there rather than rendered dead.
-  const [appleReady, setAppleReady] = useState(false);
+  const [appleReady, setAppleReady] = useState(Platform.OS === 'ios' && !!AppleAuthButton);
   useEffect(() => {
     let active = true;
     isAppleSignInAvailable().then((ok) => { if (active) setAppleReady(ok); });
@@ -108,7 +118,7 @@ export default function LandingScreen() {
       showAlert(t('common.comingSoon'), t('landing.socialDisabled'));
       return;
     }
-    setSocialLoading(true);
+    setSocialLoading('google');
     try {
       const token = await signInWithGoogle();
       if (token) {
@@ -120,12 +130,16 @@ export default function LandingScreen() {
         : (error.message || 'Google sign-in failed');
       showAlert(t('login.loginFailed', { defaultValue: 'Sign-In Failed' }), message);
     } finally {
-      setSocialLoading(false);
+      setSocialLoading(null);
     }
   };
 
   const handleAppleSignIn = async () => {
-    setSocialLoading(true);
+    // Apple's native button exposes no `disabled` prop, so the guard that the
+    // Google TouchableOpacity gets for free has to be explicit here.
+    if (socialLoading !== null) return;
+
+    setSocialLoading('apple');
     try {
       const result = await signInWithApple();
       // null == user cancelled; not an error worth alerting on.
@@ -141,7 +155,7 @@ export default function LandingScreen() {
         : (error.message || 'Apple sign-in failed');
       showAlert(t('login.loginFailed', { defaultValue: 'Sign-In Failed' }), message);
     } finally {
-      setSocialLoading(false);
+      setSocialLoading(null);
     }
   };
 
@@ -290,59 +304,48 @@ export default function LandingScreen() {
               </View>
 
               <View style={styles.socialButtons}>
+                {/* Apple FIRST: the HIG asks for Sign in with Apple to lead the
+                    sign-in options, and the first child of an LTR row is the
+                    more prominent slot. Apple's own component is used rather
+                    than a custom one because the HIG requires their official
+                    logo and an approved, Apple-localized title. */}
+                {appleReady && AppleAuthButton && (
+                  <AppleAuthButton
+                    buttonType={AppleAuthButtonType.SIGN_IN}
+                    buttonStyle={isDark ? AppleAuthButtonStyle.WHITE : AppleAuthButtonStyle.BLACK}
+                    cornerRadius={BORDER_RADIUS.md}
+                    style={styles.appleButton}
+                    onPress={handleAppleSignIn}
+                  />
+                )}
+
                 <TouchableOpacity
                   style={[styles.socialButton, {
                     backgroundColor: colors.surface,
                     borderColor: colors.border
                   }]}
                   onPress={handleGoogleSignIn}
-                  disabled={socialLoading}
+                  disabled={socialLoading !== null}
                   activeOpacity={0.8}
                   data-testid="google-signin-btn"
                 >
-                  {socialLoading ? (
+                  {socialLoading === 'google' ? (
                     <ActivityIndicator size="small" color={colors.accent} />
                   ) : (
                     <>
                       <View style={styles.googleIcon}>
                         <Text style={styles.googleIconText}>G</Text>
                       </View>
-                      <Text style={[styles.socialButtonText, { color: colors.text }]}>Google</Text>
+                      <Text style={[styles.socialButtonText, { color: colors.text }]}>
+                        {t('common.google')}
+                      </Text>
                     </>
                   )}
                 </TouchableOpacity>
-
-                {appleReady && (
-                  <TouchableOpacity
-                    style={[styles.socialButton, {
-                      backgroundColor: isDark ? '#ffffff' : '#000000',
-                      borderColor: isDark ? '#ffffff' : '#000000',
-                    }]}
-                    onPress={handleAppleSignIn}
-                    disabled={socialLoading}
-                    activeOpacity={0.8}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('common.apple')}
-                    data-testid="apple-signin-btn"
-                  >
-                    {socialLoading ? (
-                      <ActivityIndicator size="small" color={isDark ? '#000000' : '#ffffff'} />
-                    ) : (
-                      <>
-                        {/* FontAwesome is the only bundled pack with an Apple
-                            glyph; AntDesign has none. Apple's HIG: black on
-                            light, white on dark, and the SAME socialButton
-                            style as Google so neither looks secondary. */}
-                        <FontAwesome name="apple" size={20} color={isDark ? '#000000' : '#ffffff'} />
-                        <Text style={[styles.socialButtonText, { color: isDark ? '#000000' : '#ffffff' }]}>
-                          {t('common.apple')}
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                )}
               </View>
-              {!isFirebaseConfigured() && (
+              {/* Apple does not depend on Firebase, so this notice must not
+                  appear while a working Apple button is on screen. */}
+              {!isFirebaseConfigured() && !appleReady && (
                 <Text style={[styles.socialDisabledText, { color: colors.textMuted }]}>
                   {t('landing.socialDisabled')}
                 </Text>
@@ -605,6 +608,14 @@ const styles = StyleSheet.create({
   socialButtons: {
     flexDirection: 'row',
     gap: SPACING.md,
+  },
+  // Apple's native button is a native view and needs an explicit height.
+  // Google's here = 20 (googleIcon) + 28 (paddingVertical 14 x2) + 2 (border)
+  // = 50. NOTE this differs from SocialAuthButtons (58) because that screen's
+  // Google glyph sits in a 28pt chip. Measured per screen, not copied.
+  appleButton: {
+    flex: 1,
+    height: 50,
   },
   socialButton: {
     flex: 1,
