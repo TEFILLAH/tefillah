@@ -9,11 +9,12 @@ import { completeSocialProfile } from '../lib/socialAuth';
 import { useAuthStore } from '../store/authStore';
 
 /**
- * Step after Google social sign-in when the account is missing phone/location.
+ * Step after social sign-in (Google or Apple) when the account is missing
+ * phone/location.
  *
  * `socialSignIn` (lib/socialAuth) has already persisted the session + populated
- * the auth store user; GoogleSignInButton then routes here with the account's
- * email/name/agent flag in the query string. We collect the mandatory
+ * the auth store user; the social button then routes here via socialRedirectPath
+ * with the account's email/name/agent flag + provider in the query string. We collect the mandatory
  * phone + city + country, call authAPI.completeSocialAuth via completeSocialProfile
  * (which re-applies the fresh session), refresh the store, and route on.
  *
@@ -24,11 +25,13 @@ export default function CompleteProfilePage() {
   const [params] = useSearchParams();
   const { user, refreshUser } = useAuthStore();
 
-  // Email + name come from the query string (set by GoogleSignInButton) with the
+  // Email + name come from the query string (set by socialRedirectPath) with the
   // signed-in store user as a fallback. Either identifies the pending account.
   const email = (params.get('email') ?? user?.email ?? '').trim();
   const name = (params.get('name') ?? user?.name ?? '').trim();
   const isAgent = params.get('agent') === '1';
+  // Absent when the page is reached directly rather than from a social button.
+  const provider = params.get('provider');
 
   const [form, setForm] = useState({
     phone: '', // local number only — the dial code comes from the selected country
@@ -111,6 +114,11 @@ export default function CompleteProfilePage() {
         <p className="mt-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
           Your phone number and location connect you with prayer partners nearby.
         </p>
+        {provider && (
+          <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+            Signed in with {provider === 'apple' ? 'Apple' : 'Google'}
+          </p>
+        )}
       </div>
 
       <form onSubmit={onSubmit} className="mt-8 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">

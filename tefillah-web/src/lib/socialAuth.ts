@@ -4,6 +4,16 @@ import { storage } from './storage';
 
 type Next = 'complete-profile' | 'verify' | 'home' | 'partner';
 
+export type SocialProvider = 'google' | 'apple';
+
+export interface SocialSignInResult {
+  next: Next;
+  provider: SocialProvider;
+  email?: string;
+  name?: string;
+  isAgent?: boolean;
+}
+
 interface SessionUser {
   email?: string;
   name?: string;
@@ -35,15 +45,44 @@ function isIncomplete(u: SessionUser): boolean {
   return !String(u.phone ?? '').trim() || !String(u.location_city ?? '').trim() || !String(u.location_country ?? '').trim();
 }
 
-export async function socialSignIn(firebaseToken: string): Promise<{ next: Next; email?: string; name?: string; isAgent?: boolean }> {
-  const res = await authAPI.socialAuth(firebaseToken);
+export async function socialSignIn(
+  firebaseToken: string,
+  provider: SocialProvider,
+  // Apple hands the display name to the CLIENT on the first authorization only and
+  // never puts it in the token, so it has to ride along with the request or the
+  // account is created from the email prefix (a private-relay alias, for Apple).
+  fullName?: string,
+): Promise<SocialSignInResult> {
+  const res = await authAPI.socialAuth(firebaseToken, fullName);
   const type = applySession(res);
   const u: SessionUser = res.user ?? {};
   if (isIncomplete(u)) {
-    return { next: 'complete-profile', email: u.email, name: u.name, isAgent: type === 'partner' };
+    return { next: 'complete-profile', provider, email: u.email, name: u.name, isAgent: type === 'partner' };
   }
-  if (!u.is_verified) return { next: 'verify' };
-  return { next: type === 'partner' ? 'partner' : 'home' };
+  if (!u.is_verified) return { next: 'verify', provider };
+  return { next: type === 'partner' ? 'partner' : 'home', provider };
+}
+
+// Where a finished social sign-in lands. Shared by the Google + Apple buttons so
+// both route identically.
+export function socialRedirectPath(r: SocialSignInResult): string {
+  switch (r.next) {
+    case 'complete-profile': {
+      const q = new URLSearchParams({
+        email: r.email ?? '',
+        name: r.name ?? '',
+        agent: r.isAgent ? '1' : '0',
+        provider: r.provider,
+      });
+      return `/complete-profile?${q.toString()}`;
+    }
+    case 'verify':
+      return '/verify';
+    case 'partner':
+      return '/partner/dashboard';
+    default:
+      return '/home';
+  }
 }
 
 export async function completeSocialProfile(data: {

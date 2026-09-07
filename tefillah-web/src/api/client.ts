@@ -85,10 +85,12 @@ export const authAPI = {
     return res.data;
   },
 
-  // Google sign-in: send the Firebase ID token; backend returns a session.
+  // Social sign-in (Google / Apple): send the Firebase ID token; backend returns a session.
   // A brand-new user comes back with phone/location null → finish on /complete-profile.
-  socialAuth: async (firebase_token: string) => {
-    const res = await apiClient.post('/auth/social', { firebase_token });
+  // full_name is only sent for Apple's first authorization, whose token carries no
+  // name; the backend prefers a provider-verified name whenever it has one.
+  socialAuth: async (firebase_token: string, full_name?: string) => {
+    const res = await apiClient.post('/auth/social', full_name ? { firebase_token, full_name } : { firebase_token });
     return res.data;
   },
 

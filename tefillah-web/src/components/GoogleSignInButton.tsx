@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
-import { socialSignIn } from '../lib/socialAuth';
+import { socialRedirectPath, socialSignIn } from '../lib/socialAuth';
 
 /**
  * Web Google sign-in via Google Identity Services (GIS).
@@ -16,7 +16,8 @@ import { socialSignIn } from '../lib/socialAuth';
 const CLIENT_ID = (import.meta.env.VITE_GOOGLE_WEB_CLIENT_ID as string | undefined)?.trim() || '';
 const GSI_SRC = 'https://accounts.google.com/gsi/client';
 
-type GsiText = 'continue_with' | 'signin_with' | 'signup_with';
+// Exported so AppleSignInButton can offer the same three wordings.
+export type GsiText = 'continue_with' | 'signin_with' | 'signup_with';
 
 interface GsiWindow {
   google?: {
@@ -66,18 +67,9 @@ export default function GoogleSignInButton({ text = 'continue_with' }: { text?: 
       setBusy(true);
       setError(null);
       try {
-        const r = await socialSignIn(resp.credential);
+        const r = await socialSignIn(resp.credential, 'google');
         if (cancelled) return;
-        if (r.next === 'complete-profile') {
-          const q = new URLSearchParams({ email: r.email ?? '', name: r.name ?? '', agent: r.isAgent ? '1' : '0' });
-          navigate(`/complete-profile?${q.toString()}`, { replace: true });
-        } else if (r.next === 'verify') {
-          navigate('/verify', { replace: true });
-        } else if (r.next === 'partner') {
-          navigate('/partner/dashboard', { replace: true });
-        } else {
-          navigate('/home', { replace: true });
-        }
+        navigate(socialRedirectPath(r), { replace: true });
       } catch (err) {
         const e = err as { response?: { data?: { detail?: string } } };
         setError(e?.response?.data?.detail ?? 'Google sign-in failed. Please use email sign-in.');

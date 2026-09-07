@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, Loader2, Lock, Mail, MapPin, User } from 'lucide-react';
 import Logo from '../components/Logo';
 import GoogleSignInButton from '../components/GoogleSignInButton';
+import AppleSignInButton from '../components/AppleSignInButton';
 import PasswordInput from '../components/PasswordInput';
 import CountrySelect from '../components/CountrySelect';
 import PhoneCodeInput from '../components/PhoneCodeInput';
@@ -189,14 +190,11 @@ export default function SignupPage() {
           {isLoading ? <Loader2 size={18} className="animate-spin" /> : 'Create Account'}
         </button>
 
-        {GOOGLE_SIGNIN_ENABLED && (
-          <>
-            <div className="text-center">
-              <span className="divider-rule text-xs" style={{ color: 'var(--color-text-muted)' }}>or</span>
-            </div>
-            <GoogleSignInButton text="signup_with" />
-          </>
-        )}
+        <div className="text-center">
+          <span className="divider-rule text-xs" style={{ color: 'var(--color-text-muted)' }}>or</span>
+        </div>
+        {GOOGLE_SIGNIN_ENABLED && <GoogleSignInButton text="signup_with" />}
+        <AppleSignInButton text="signup_with" />
 
         <p className="text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
           Already have an account?{' '}
