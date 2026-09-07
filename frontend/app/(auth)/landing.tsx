@@ -14,14 +14,14 @@ import Animated, {
   Easing,
   interpolate,
 } from 'react-native-reanimated';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, FontAwesome } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { useLanguageStore } from '../../src/store/languageStore';
 import { useTheme } from '../../src/store/themeStore';
 import { ThemeToggle } from '../../src/components/ThemeToggle';
 import { publicAPI } from '../../src/api/client';
-import { isFirebaseConfigured, signInWithGoogle } from '../../src/lib/firebase';
+import { isFirebaseConfigured, signInWithGoogle, signInWithApple, isAppleSignInAvailable } from '../../src/lib/firebase';
 import { handleSocialAuthFlow } from '../../src/lib/socialAuth';
 import { showAlert } from '../../src/lib/alerts';
 import { FONTS, SPACING, BORDER_RADIUS } from '../../src/constants/theme';
@@ -94,6 +94,15 @@ export default function LandingScreen() {
   const [isLoadingVerse, setIsLoadingVerse] = useState(true);
   const [socialLoading, setSocialLoading] = useState(false);
 
+  // iOS only: ASAuthorization has no Android/web equivalent, so the button is
+  // omitted entirely there rather than rendered dead.
+  const [appleReady, setAppleReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    isAppleSignInAvailable().then((ok) => { if (active) setAppleReady(ok); });
+    return () => { active = false; };
+  }, []);
+
   const handleGoogleSignIn = async () => {
     if (!isFirebaseConfigured()) {
       showAlert(t('common.comingSoon'), t('landing.socialDisabled'));
@@ -109,6 +118,27 @@ export default function LandingScreen() {
       const message = error.message === 'Network Error'
         ? t('common.networkError', { defaultValue: 'Cannot reach server. Please check your connection.' })
         : (error.message || 'Google sign-in failed');
+      showAlert(t('login.loginFailed', { defaultValue: 'Sign-In Failed' }), message);
+    } finally {
+      setSocialLoading(false);
+    }
+  };
+
+  const handleAppleSignIn = async () => {
+    setSocialLoading(true);
+    try {
+      const result = await signInWithApple();
+      // null == user cancelled; not an error worth alerting on.
+      if (result) {
+        await handleSocialAuthFlow(result.identityToken, router, {
+          provider: 'apple',
+          fullName: result.fullName,
+        });
+      }
+    } catch (error: any) {
+      const message = error.message === 'Network Error'
+        ? t('common.networkError', { defaultValue: 'Cannot reach server. Please check your connection.' })
+        : (error.message || 'Apple sign-in failed');
       showAlert(t('login.loginFailed', { defaultValue: 'Sign-In Failed' }), message);
     } finally {
       setSocialLoading(false);
@@ -282,6 +312,35 @@ export default function LandingScreen() {
                   )}
                 </TouchableOpacity>
 
+                {appleReady && (
+                  <TouchableOpacity
+                    style={[styles.socialButton, {
+                      backgroundColor: isDark ? '#ffffff' : '#000000',
+                      borderColor: isDark ? '#ffffff' : '#000000',
+                    }]}
+                    onPress={handleAppleSignIn}
+                    disabled={socialLoading}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('common.apple')}
+                    data-testid="apple-signin-btn"
+                  >
+                    {socialLoading ? (
+                      <ActivityIndicator size="small" color={isDark ? '#000000' : '#ffffff'} />
+                    ) : (
+                      <>
+                        {/* FontAwesome is the only bundled pack with an Apple
+                            glyph; AntDesign has none. Apple's HIG: black on
+                            light, white on dark, and the SAME socialButton
+                            style as Google so neither looks secondary. */}
+                        <FontAwesome name="apple" size={20} color={isDark ? '#000000' : '#ffffff'} />
+                        <Text style={[styles.socialButtonText, { color: isDark ? '#000000' : '#ffffff' }]}>
+                          {t('common.apple')}
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
               </View>
               {!isFirebaseConfigured() && (
                 <Text style={[styles.socialDisabledText, { color: colors.textMuted }]}>

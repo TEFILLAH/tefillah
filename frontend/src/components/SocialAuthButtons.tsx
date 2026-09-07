@@ -1,15 +1,25 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
-import { AntDesign } from '@expo/vector-icons';
+import { AntDesign, FontAwesome } from '@expo/vector-icons';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../store/themeStore';
 import { showAlert } from '../lib/alerts';
-import { isFirebaseConfigured, signInWithGoogle } from '../lib/firebase';
+import {
+  isFirebaseConfigured,
+  signInWithGoogle,
+  signInWithApple,
+  isAppleSignInAvailable,
+} from '../lib/firebase';
+import type { SocialAuthMeta } from '../lib/socialAuth';
 import { FONTS, SPACING, BORDER_RADIUS } from '../constants/theme';
 
 interface SocialAuthButtonsProps {
-  onSocialAuth: (firebaseToken: string) => void;
+  /**
+   * `meta` tells the caller WHICH provider produced the token, and carries
+   * Apple's first-authorization-only full name (see socialAuth.ts).
+   */
+  onSocialAuth: (firebaseToken: string, meta: SocialAuthMeta) => void;
   isLoading?: boolean;
 }
 
@@ -47,8 +57,22 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
 }) => {
   const { colors, isDark } = useTheme();
   const { t } = useTranslation();
-  const [signingIn, setSigningIn] = useState<'google' | null>(null);
+  const [signingIn, setSigningIn] = useState<'google' | 'apple' | null>(null);
   const googleReady = isFirebaseConfigured();
+
+  // Sign in with Apple exists on iOS only (ASAuthorization has no Android or
+  // web equivalent), so the button is not rendered at all elsewhere rather
+  // than shown disabled — a dead button is worse than no button.
+  const [appleReady, setAppleReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    isAppleSignInAvailable().then((ok) => {
+      if (active) setAppleReady(ok);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleGooglePress = async () => {
     if (!googleReady) {
@@ -63,7 +87,7 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
     try {
       const token = await signInWithGoogle();
       if (token) {
-        onSocialAuth(token);
+        onSocialAuth(token, { provider: 'google' });
       }
     } catch (error: any) {
       if (error.message && !error.message.includes('cancel')) {
@@ -74,7 +98,34 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
     }
   };
 
+  const handleApplePress = async () => {
+    setSigningIn('apple');
+    try {
+      const result = await signInWithApple();
+      // null means the user cancelled — not an error, say nothing.
+      if (result) {
+        onSocialAuth(result.identityToken, {
+          provider: 'apple',
+          fullName: result.fullName,
+        });
+      }
+    } catch (error: any) {
+      if (error.message && !error.message.includes('cancel')) {
+        showAlert('Sign-In Failed', error.message || 'Apple sign-in failed');
+      }
+    } finally {
+      setSigningIn(null);
+    }
+  };
+
   const isDisabled = isLoading || signingIn !== null;
+
+  // Apple's Human Interface Guidelines: black button on light backgrounds,
+  // white on dark. Both use the SAME socialButton style as Google so the two
+  // are identical in size and weight — App Store guideline 4.8 requires Apple
+  // to be presented no less prominently than other sign-in options.
+  const appleBg = isDark ? '#ffffff' : '#000000';
+  const appleFg = isDark ? '#000000' : '#ffffff';
 
   return (
     <Animated.View entering={FadeIn.duration(500)} style={styles.container}>
@@ -117,6 +168,37 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
             </>
           )}
         </TouchableOpacity>
+
+        {appleReady && (
+          <TouchableOpacity
+            style={[
+              styles.socialButton,
+              {
+                backgroundColor: appleBg,
+                borderColor: appleBg,
+                shadowColor: isDark ? '#000' : '#1a1a1a',
+              },
+            ]}
+            onPress={handleApplePress}
+            disabled={isDisabled}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel={t('common.apple')}
+          >
+            {signingIn === 'apple' ? (
+              <ActivityIndicator size="small" color={appleFg} />
+            ) : (
+              <>
+                {/* FontAwesome is the only bundled pack with an Apple glyph —
+                    AntDesign has none, so it would render an empty box. */}
+                <FontAwesome name="apple" size={20} color={appleFg} />
+                <Text style={[styles.socialButtonText, { color: appleFg }]}>
+                  {t('common.apple')}
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       {!googleReady && (

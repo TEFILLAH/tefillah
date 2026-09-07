@@ -19,7 +19,8 @@
         "NSPhotoLibraryUsageDescription": "Tefillah needs photo library access to select a profile photo.",
         "NSLocationWhenInUseUsageDescription": "Tefillah uses your location to connect your prayers with nearby prayer partners.",
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
@@ -75,6 +76,7 @@
           "color": "#d4af37"
         }
       ],
+      "expo-apple-authentication",
       [
         "@react-native-google-signin/google-signin",
         {

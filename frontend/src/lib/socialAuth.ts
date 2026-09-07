@@ -6,6 +6,13 @@ export type SocialAuthRouter = {
   replace: (path: any) => void;
 };
 
+/** Which provider produced the token, plus Apple's one-time full name. */
+export type SocialAuthMeta = {
+  provider: 'google' | 'apple';
+  /** Apple only, and only on the FIRST authorization. Null otherwise. */
+  fullName?: string | null;
+};
+
 /**
  * Returns true if the social-auth user is missing any mandatory profile data
  * (phone, city, country). Both regular users AND prayer partners MUST have
@@ -36,9 +43,11 @@ function isProfileIncomplete(user: any): boolean {
 export async function handleSocialAuthFlow(
   firebaseToken: string,
   router: SocialAuthRouter,
+  meta: SocialAuthMeta = { provider: 'google' },
 ): Promise<void> {
   const response = await authAPI.socialAuth({
     firebase_token: firebaseToken,
+    full_name: meta.fullName ?? null,
   });
 
   // Persist auth token & user type (encrypted on native)
@@ -62,7 +71,7 @@ export async function handleSocialAuthFlow(
       params: {
         email: response.user?.email || '',
         name: response.user?.name || '',
-        provider: 'google',
+        provider: meta.provider,
         isAgent: response.user_type === 'partner' ? '1' : '0',
       },
     });

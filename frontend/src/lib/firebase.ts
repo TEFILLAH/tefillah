@@ -156,4 +156,82 @@ export const signInWithGoogle = async (): Promise<string | null> => {
   }
 };
 
+// ==================== Sign in with Apple ====================
+// iOS ONLY. expo-apple-authentication wraps ASAuthorization, which does not
+// exist on Android or web, so the button must not even render there.
+//
+// Unlike Google, this token is NOT exchanged through Firebase: the backend
+// verifies Apple's identity token directly against Apple's JWKS. That avoids
+// bootstrapping Firebase Auth on native (it is initialised for web only above).
+//
+// Required by App Store Review Guideline 4.8 because we offer Google sign-in.
+let AppleAuthRef: any = null;
+if (isNative && Platform.OS === 'ios') {
+  try {
+    AppleAuthRef = require('expo-apple-authentication');
+  } catch (e) {
+    if (__DEV__) console.error('expo-apple-authentication init error:', e);
+  }
+}
+
+export type AppleSignInResult = {
+  /** Apple's identity token (an RS256 JWT). Sent to the backend verbatim. */
+  identityToken: string;
+  /**
+   * Apple returns the user's name ONLY on the very first authorization and
+   * NEVER inside the token. If we drop it here it is gone forever, and the
+   * account ends up named after a private-relay email prefix. Null on every
+   * subsequent sign-in, which is expected, not an error.
+   */
+  fullName: string | null;
+};
+
+/** True only where Sign in with Apple can actually run (iOS, module present). */
+export const isAppleSignInAvailable = async (): Promise<boolean> => {
+  if (!AppleAuthRef) return false;
+  try {
+    return await AppleAuthRef.isAvailableAsync();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Sign in with Apple. Returns the identity token plus the one-time full name,
+ * or null if the user cancelled (which is not an error worth alerting on).
+ */
+export const signInWithApple = async (): Promise<AppleSignInResult | null> => {
+  if (!AppleAuthRef) {
+    throw new Error('Sign in with Apple is only available on iOS.');
+  }
+
+  try {
+    const credential = await AppleAuthRef.signInAsync({
+      requestedScopes: [
+        AppleAuthRef.AppleAuthenticationScope.FULL_NAME,
+        AppleAuthRef.AppleAuthenticationScope.EMAIL,
+      ],
+    });
+
+    if (!credential?.identityToken) {
+      throw new Error('Apple sign-in did not return an identity token.');
+    }
+
+    const given = credential.fullName?.givenName?.trim() || '';
+    const family = credential.fullName?.familyName?.trim() || '';
+    const fullName = `${given} ${family}`.trim();
+
+    return { identityToken: credential.identityToken, fullName: fullName || null };
+  } catch (error: any) {
+    // Apple signals a user-initiated cancel with this code; treat it like the
+    // Google path does — silently, with no alert.
+    if (error?.code === 'ERR_REQUEST_CANCELED' || error?.code === 'ERR_CANCELED') {
+      return null;
+    }
+    const msg = (error?.message || '').toLowerCase();
+    if (msg.includes('cancel')) return null;
+    throw new Error(error?.message || 'Apple sign-in failed.');
+  }
+};
+
 export { app, auth };

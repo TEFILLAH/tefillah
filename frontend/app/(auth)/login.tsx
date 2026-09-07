@@ -14,6 +14,7 @@ import { useAuthStore } from '../../src/store/authStore';
 import { useTheme } from '../../src/store/themeStore';
 import { ThemeToggle } from '../../src/components/ThemeToggle';
 import { handleSocialAuthFlow } from '../../src/lib/socialAuth';
+import type { SocialAuthMeta } from '../../src/lib/socialAuth';
 import { showAlert } from '../../src/lib/alerts';
 import { useTranslation } from 'react-i18next';
 import { FONTS, SPACING } from '../../src/constants/theme';
@@ -65,10 +66,10 @@ export default function LoginScreen() {
     }
   };
 
-  const handleSocialAuth = async (firebaseToken: string) => {
+  const handleSocialAuth = async (firebaseToken: string, meta: SocialAuthMeta) => {
     setSocialLoading(true);
     try {
-      await handleSocialAuthFlow(firebaseToken, router);
+      await handleSocialAuthFlow(firebaseToken, router, meta);
     } catch (error: any) {
       const message = error.response?.data?.detail
         || (error.message === 'Network Error' ? 'Cannot reach server. Please check your connection.' : 'Please try again');

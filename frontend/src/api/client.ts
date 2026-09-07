@@ -130,8 +130,24 @@ export const authAPI = {
     return res.data as { access_token: string; user_type: 'user' | 'partner'; account: any };
   },
 
-  socialAuth: async ({ firebase_token }: { firebase_token: string }) => {
-    const res = await apiClient.post('/auth/social', { firebase_token });
+  socialAuth: async ({
+    firebase_token,
+    full_name,
+  }: {
+    firebase_token: string;
+    /**
+     * Apple only. Apple hands the user's name to the CLIENT once, on the first
+     * authorization, and never puts it in the token — so the client has to
+     * forward it or the backend falls back to the email prefix (which, for a
+     * private-relay address, is unreadable). Omitted for Google, whose token
+     * already carries a verified name.
+     */
+    full_name?: string | null;
+  }) => {
+    const res = await apiClient.post('/auth/social', {
+      firebase_token,
+      ...(full_name ? { full_name } : {}),
+    });
     return res.data;
   },
 
