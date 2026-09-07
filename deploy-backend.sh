@@ -43,6 +43,16 @@ mkdir -p "${STAGE}/repo"
 cp backend/repo/*.py "${STAGE}/repo/"
 ls -1 "${STAGE}/repo/"
 
+# repo/dynamo.py does `from migration import table_spec` at import time: table
+# names, keys and GSI names are defined there and nowhere else, so it is a
+# RUNTIME dependency of the adapter, not migration-only tooling. Omitting it
+# means the app boots fine on mongo and dies the instant DB_BACKEND=dynamo --
+# which is exactly how it took an instance down on 2026-09-07.
+echo "==> Staging backend/migration/table_spec.py -> ${STAGE}/migration/"
+rm -rf "${STAGE}/migration"
+mkdir -p "${STAGE}/migration"
+cp backend/migration/table_spec.py "${STAGE}/migration/"
+
 SRC_MD5="$(python -c "import hashlib;print(hashlib.md5(open('backend/server.py','rb').read()).hexdigest())")"
 echo "    source backend/server.py md5=${SRC_MD5}"
 if grep -qi "twilio" "${STAGE}/server.py"; then
@@ -61,6 +71,8 @@ members = [
     "repo/__init__.py",
     "repo/mongo.py",
     "repo/dynamo.py",
+    # runtime dependency of repo/dynamo.py -- see the staging comment above
+    "migration/table_spec.py",
     "Procfile",
     "requirements.txt",
     "firebase-credentials.json",
@@ -109,6 +121,64 @@ if bad:
     print("FATAL: repo/ package gate failed:")
     for line in bad:
         print("   ", line)
+    sys.exit(1)
+PYEOF
+
+# --- Hard gate: the bundle must IMPORT under BOTH backends -------------------
+# The mongo path never imports repo/dynamo.py, so a bundle can boot perfectly on
+# mongo and die the instant DB_BACKEND=dynamo. That is not hypothetical: it took
+# an instance down on 2026-09-07 (ModuleNotFoundError: 'migration'), because a
+# mongo-only smoke test had passed. Both paths are checked here, from the
+# EXTRACTED BUNDLE, which is the only layout that proves what EB will run.
+echo "==> Gate: importing the bundle under DB_BACKEND=mongo and =dynamo"
+python - "${ZIP}" <<'PYEOF'
+import os, subprocess, sys, tempfile, textwrap, zipfile
+from pathlib import Path
+
+zip_path = Path(sys.argv[1]).resolve()
+env_file = Path("backend/.env").resolve()
+tmp = Path(tempfile.mkdtemp(prefix="ebgate_"))
+zipfile.ZipFile(zip_path).extractall(tmp)
+
+probe = textwrap.dedent("""
+    import os, sys, warnings
+    from pathlib import Path
+    warnings.filterwarnings("ignore")
+    for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    os.environ["DB_NAME"] = "tefilah_test"      # never prod for an import probe
+    os.environ.pop("PRODUCTION", None)
+    os.environ["DB_BACKEND"] = sys.argv[2]
+    os.environ.setdefault("AWS_DEFAULT_REGION", "ap-south-1")
+    sys.path.insert(0, os.getcwd())
+    import server
+    assert server.repos.backend == sys.argv[2], server.repos.backend
+    print("   ", sys.argv[2], "OK -", len([n for n in vars(server.repos)
+                                           if not n.startswith("_")]), "repos")
+""")
+(tmp / "_probe.py").write_text(probe, encoding="utf-8")
+
+failed = False
+for backend in ("mongo", "dynamo"):
+    # MUST be the verified venv: the system python has an incompatible
+    # Starlette and cannot import the app, which would fail this gate for
+    # entirely the wrong reason.
+    venv_py = Path("backend/.venv/Scripts/python.exe").resolve()
+    if not venv_py.exists():
+        venv_py = Path("backend/.venv/bin/python").resolve()
+    r = subprocess.run([str(venv_py), "_probe.py", str(env_file), backend],
+                       cwd=tmp, capture_output=True, text=True, timeout=180)
+    if r.returncode != 0:
+        failed = True
+        print(f"    {backend} FAILED:")
+        print("      " + (r.stderr or r.stdout).strip().splitlines()[-1])
+    else:
+        print(r.stdout.strip())
+if failed:
+    print("FATAL: bundle does not import under both backends — refusing to deploy.")
     sys.exit(1)
 PYEOF
 
