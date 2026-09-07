@@ -50,24 +50,35 @@ db = client.get_database(
 from repo import make_repos  # noqa: E402
 repos = make_repos(db)
 
+def _looks_production(mongo_target: Optional[str] = None) -> bool:
+    """True unless this is plainly a developer laptop.
+
+    Any deployment against a non-local database (Railway / Atlas / Elastic
+    Beanstalk) counts as production. RAILWAY_ENVIRONMENT / PRODUCTION are NOT
+    set by Elastic Beanstalk, which is why the database target — the one signal
+    every environment must provide — is what actually catches EB.
+
+    Single source of truth for every "is this prod?" secret guard below; adding
+    a second heuristic is how one of them ends up not covering EB.
+    """
+    target = ((mongo_url if mongo_target is None else mongo_target) or '').lower()
+    return bool(
+        os.environ.get('RAILWAY_ENVIRONMENT')
+        or os.environ.get('PRODUCTION')
+        or 'mongodb+srv' in target
+        or (target and 'localhost' not in target and '127.0.0.1' not in target)
+    )
+
 # JWT Configuration
 _jwt_default = 'tefilah-secret-key-2024-sacred'
 JWT_SECRET = os.environ.get('JWT_SECRET', _jwt_default)
 if JWT_SECRET == _jwt_default:
     _boot_logger = logging.getLogger(__name__)
-    # Fail closed: any deployment against a non-local database (Railway / Atlas /
-    # Elastic Beanstalk) is treated as production and MUST NOT run on the built-in
-    # default secret — otherwise anyone can forge admin/user tokens. Local dev
-    # (localhost Mongo) still boots with a warning; set ALLOW_DEFAULT_JWT_SECRET=true
-    # to force-allow the default anywhere else (not recommended).
-    _mongo_target = (mongo_url or '').lower()
-    _looks_production = bool(
-        os.environ.get('RAILWAY_ENVIRONMENT')
-        or os.environ.get('PRODUCTION')
-        or 'mongodb+srv' in _mongo_target
-        or (_mongo_target and 'localhost' not in _mongo_target and '127.0.0.1' not in _mongo_target)
-    )
-    if _looks_production and os.environ.get('ALLOW_DEFAULT_JWT_SECRET', '').lower() != 'true':
+    # Fail closed: production MUST NOT run on the built-in default secret —
+    # otherwise anyone can forge admin/user tokens. Local dev (localhost Mongo)
+    # still boots with a warning; set ALLOW_DEFAULT_JWT_SECRET=true to
+    # force-allow the default anywhere else (not recommended).
+    if _looks_production() and os.environ.get('ALLOW_DEFAULT_JWT_SECRET', '').lower() != 'true':
         raise RuntimeError(
             "FATAL: JWT_SECRET must be set to a strong random value in production. "
             "Refusing to start on the built-in default secret."
@@ -136,10 +147,24 @@ def _get_s3():
 # Admin secret for first admin creation
 _admin_default = 'tefilah-admin-secret-2024'
 ADMIN_SECRET = os.environ.get('ADMIN_SECRET', _admin_default)
+# The old guard only checked RAILWAY_ENVIRONMENT / PRODUCTION, neither of which
+# Elastic Beanstalk sets — so on EB it never fired and the admin-bootstrap
+# endpoint stayed gated by a secret published in this repo. Same detection as
+# JWT_SECRET above now, so EB is covered.
+#
+# This does NOT raise at import, deliberately: production is live on the default
+# value right now, so raising would take the ENTIRE API down on the next deploy
+# over a single one-time bootstrap endpoint. Instead that endpoint alone fails
+# closed — no valid secret exists while the default is in place, so the hole is
+# shut either way, and the fix for the operator is the same: set ADMIN_SECRET.
+ADMIN_BOOTSTRAP_DISABLED = ADMIN_SECRET == _admin_default and _looks_production()
 if ADMIN_SECRET == _admin_default:
-    if os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('PRODUCTION'):
-        raise RuntimeError("FATAL: ADMIN_SECRET must be set to a strong random value in production!")
-    logging.getLogger(__name__).warning("⚠️  Using default ADMIN_SECRET — set ADMIN_SECRET env var before deploying!")
+    if ADMIN_BOOTSTRAP_DISABLED:
+        logging.getLogger(__name__).error(
+            "🚨 ADMIN_SECRET is the built-in default on a production deployment — "
+            "/api/admin/create-first-admin is DISABLED until ADMIN_SECRET is set to a strong random value.")
+    else:
+        logging.getLogger(__name__).warning("⚠️  Using default ADMIN_SECRET — set ADMIN_SECRET env var before deploying!")
 
 # Firebase Admin SDK initialization (for FCM push notifications)
 _firebase_creds_path = os.environ.get('FIREBASE_ADMIN_CREDENTIALS', '')
@@ -3001,7 +3026,11 @@ async def upload_partner_photo(file: UploadFile = File(...), partner: dict = Dep
 @api_router.post("/admin/create-first-admin")
 async def create_first_admin(admin_data: AdminCreate, request: Request):
     admin_secret = request.headers.get("x-admin-secret", "")
-    if not admin_secret or admin_secret != ADMIN_SECRET:
+    # ADMIN_BOOTSTRAP_DISABLED: the configured secret is the one hardcoded in
+    # this repo and we look like production — no caller can be authentic, so
+    # refuse before comparing. Same 403 as a wrong secret: don't tell an
+    # attacker which of the two it was.
+    if ADMIN_BOOTSTRAP_DISABLED or not admin_secret or admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Invalid admin secret")
     
     # VULN-02 (TASK-2): hard-fail once any admin exists (one-time bootstrap only,
