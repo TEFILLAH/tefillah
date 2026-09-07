@@ -1,5 +1,13 @@
-# Cloudflare Pages / Netlify _headers file
-# Applied to every static response served from the SPA.
+# Cloudflare Pages / Netlify _headers file.
+#
+# NOT IN USE AND STALE — do not trust the CSP below. tefillah.in is served from
+# S3 + CloudFront, and deploy-web.sh uploads with `--exclude '_headers'`, so this
+# file never reaches production. The live policy is set on the CloudFront
+# distribution (E20DJ1IDF5M5MD) and is much wider than this one: it has to allow
+# identitytoolkit / securetoken / firebaseapp.com for Google and Apple sign-in,
+# none of which appear here. Kept only as a starting point if the site ever moves
+# to a host that reads this file — in which case sync it against the live header
+# first (`curl -I https://tefillah.in/login`) or sign-in will break.
 
 /*
   X-Content-Type-Options: nosniff

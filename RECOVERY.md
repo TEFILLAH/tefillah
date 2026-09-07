@@ -40,9 +40,10 @@ corruption, not a bug — check with `head -c 8 <file> | xxd`.
 
 ## What is NOT recoverable from git
 
-Anything uncommitted. As of 2026-09-07 that is three files edited in an earlier
-session: `tefillah-web/src/components/Header.tsx`, `Logo.tsx`,
-`styles/globals.css`. **Commit or stash them** if they matter.
+Anything uncommitted. Check `git status` and **commit or stash** before walking
+away — on this drive that is the whole safety net. (The three files this section
+used to name — `Header.tsx`, `Logo.tsx`, `styles/globals.css` — were committed
+and pushed on 2026-09-07.)
 
 Also not in git (by design): `backend/.env` (real production credentials) and
 `_eb_build/` (gitignored; `deploy-backend.sh` regenerates its contents from

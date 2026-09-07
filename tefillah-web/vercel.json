@@ -1,4 +1,5 @@
 {
+  "_comment": "NOT IN USE AND STALE. tefillah.in is served from S3 + CloudFront; the live security headers are set on the CloudFront distribution (E20DJ1IDF5M5MD), not here. The CSP below is narrower than production and omits identitytoolkit / securetoken / firebaseapp.com, so Google and Apple sign-in would both fail under it. If the site ever moves to Vercel, sync this against `curl -I https://tefillah.in/login` first.",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
