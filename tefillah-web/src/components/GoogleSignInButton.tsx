@@ -118,7 +118,7 @@ export default function GoogleSignInButton({ text = 'continue_with' }: { text?: 
         </p>
       )}
       {error && (
-        <p className="mt-2 text-xs text-center" style={{ color: 'var(--color-error)' }}>
+        <p role="alert" className="mt-2 text-xs text-center" style={{ color: 'var(--color-error)' }}>
           {error}
         </p>
       )}

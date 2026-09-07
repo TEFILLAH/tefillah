@@ -15,7 +15,7 @@ import { useAuthStore } from '../store/authStore';
  * `socialSignIn` (lib/socialAuth) has already persisted the session + populated
  * the auth store user; the social button then routes here via socialRedirectPath
  * with the account's email/name/agent flag + provider in the query string. We collect the mandatory
- * phone + city + country, call authAPI.completeSocialAuth via completeSocialProfile
+ * name + phone + city + country, call authAPI.completeSocialAuth via completeSocialProfile
  * (which re-applies the fresh session), refresh the store, and route on.
  *
  * Mirrors the mobile flow in frontend/app/(auth)/complete-profile.tsx.
@@ -27,13 +27,19 @@ export default function CompleteProfilePage() {
 
   // Email + name come from the query string (set by socialRedirectPath) with the
   // signed-in store user as a fallback. Either identifies the pending account.
-  const email = (params.get('email') ?? user?.email ?? '').trim();
-  const name = (params.get('name') ?? user?.name ?? '').trim();
+  // `||` not `??`: socialRedirectPath always SETS both params, so an unknown name
+  // arrives as '' rather than null and `??` would never reach the store fallback.
+  const email = (params.get('email') || user?.email || '').trim();
+  const name = (params.get('name') || user?.name || '').trim();
   const isAgent = params.get('agent') === '1';
   // Absent when the page is reached directly rather than from a social button.
   const provider = params.get('provider');
 
   const [form, setForm] = useState({
+    // Editable, unlike the email: Apple hands the name over on the first
+    // authorization only (and never when the user hides it), so the backend may
+    // have fallen back to the email prefix — an opaque private-relay alias.
+    name,
     phone: '', // local number only — the dial code comes from the selected country
     location_city: '',
     countryIso: DEFAULT_COUNTRY_ISO, // India by default
@@ -57,6 +63,12 @@ export default function CompleteProfilePage() {
     setValidation(null);
     setSubmitError(null);
 
+    // Mirrors SocialAuthCompleteRequest.name (min_length=2) so a short name is a
+    // friendly message here instead of a raw 422.
+    if (form.name.trim().length < 2) {
+      setValidation('Please enter your full name.');
+      return;
+    }
     if (form.phone.replace(/\D/g, '').length < 6) {
       setValidation('Please enter a valid phone number.');
       return;
@@ -74,7 +86,7 @@ export default function CompleteProfilePage() {
     try {
       const { next } = await completeSocialProfile({
         email: email.toLowerCase(),
-        name,
+        name: form.name.trim(),
         phone: `+${country.dial} ${form.phone.trim()}`.trim(),
         location_city: form.location_city.trim(),
         location_country: country.name,
@@ -137,13 +149,12 @@ export default function CompleteProfilePage() {
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="Full Name" icon={<User size={16} />}>
+          <Field label="Full Name *" icon={<User size={16} />}>
             <input
-              value={name}
-              readOnly
-              disabled
+              required
+              value={form.name}
+              onChange={(e) => update('name', e.target.value)}
               className="input pl-10"
-              style={{ opacity: 0.7, cursor: 'not-allowed' }}
               placeholder="Your name"
             />
           </Field>

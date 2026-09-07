@@ -17,6 +17,10 @@ import type { GsiText } from './GoogleSignInButton';
  * tall, pill shaped, same 240–400px width clamp. Apple requires its button to be
  * no less prominent than the other sign-in options. Colours follow Apple's HIG —
  * black on light backgrounds, white on dark.
+ *
+ * The typeface does NOT match and can't: GIS renders in an iframe-injected font
+ * of Google's choosing, while this button inherits the app's Inter. Only the box
+ * is matched.
  */
 
 const LABEL: Record<GsiText, string> = {
@@ -88,7 +92,7 @@ export default function AppleSignInButton({ text = 'continue_with' }: { text?: G
         onClick={onClick}
         disabled={busy || unavailable}
         aria-busy={busy}
-        className="mx-auto flex w-full items-center justify-center gap-2"
+        className="mx-auto flex w-full items-center justify-center gap-2 hover:opacity-90"
         style={{
           height: 40, // GIS size: 'large'
           minWidth: 240,
@@ -99,7 +103,9 @@ export default function AppleSignInButton({ text = 'continue_with' }: { text?: G
           fontSize: 14,
           fontWeight: 500,
           cursor: idle ? 'pointer' : 'default',
-          opacity: idle ? 1 : 0.55,
+          // Left unset while idle so hover:opacity-90 isn't out-specified by an
+          // inline value. Same 0.9 / 0.55 pair .btn-primary uses.
+          opacity: idle ? undefined : 0.55,
           transition: 'opacity 0.15s ease',
         }}
       >
@@ -107,7 +113,7 @@ export default function AppleSignInButton({ text = 'continue_with' }: { text?: G
         {LABEL[text]}
       </button>
       {error && (
-        <p className="mt-2 text-xs text-center" style={{ color: 'var(--color-error)' }}>
+        <p role="alert" className="mt-2 text-xs text-center" style={{ color: 'var(--color-error)' }}>
           {error}
         </p>
       )}
