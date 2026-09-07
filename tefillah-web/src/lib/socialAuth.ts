@@ -99,3 +99,26 @@ export async function completeSocialProfile(data: {
   if (!res.user?.is_verified) return { next: 'verify' };
   return { next: type === 'partner' ? 'partner' : 'home' };
 }
+
+/**
+ * Turn an API error into something safe to render.
+ *
+ * FastAPI returns `detail` as an ARRAY of objects on a 422, not a string.
+ * Passing that straight to setState and rendering it throws "Objects are not
+ * valid as a React child", which the ErrorBoundary catches — blanking the
+ * whole auth page. Reachable via Apple specifically, because full_name is the
+ * only client-supplied length-validated field in the social-auth request.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  const e = err as { response?: { data?: { detail?: unknown } }; message?: string };
+  const detail = e?.response?.data?.detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => (typeof d === 'object' && d && 'msg' in d
+        ? String((d as { msg: unknown }).msg)
+        : String(d)))
+      .join(', ');
+  }
+  if (typeof detail === 'string') return detail;
+  return fallback;
+}

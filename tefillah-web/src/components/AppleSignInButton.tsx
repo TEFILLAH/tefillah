@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { authErrorCode, signInWithApple } from '../lib/firebase';
-import { socialRedirectPath, socialSignIn } from '../lib/socialAuth';
+import { socialRedirectPath, socialSignIn, apiErrorMessage } from '../lib/socialAuth';
 import { useThemeStore } from '../store/themeStore';
 import type { GsiText } from './GoogleSignInButton';
 
@@ -56,9 +56,22 @@ export default function AppleSignInButton({ text = 'continue_with' }: { text?: G
         // Firebase's default "one account per email address" setting: this email
         // was first seen through Google, so Apple can't claim it.
         setError('This email already signs in with Google. Please continue with Google.');
+      } else if (code === 'auth/unauthorized-domain') {
+        // This exact error already bit the Google web flow once: the site's
+        // domain must be listed under Firebase Auth > Settings > Authorized
+        // domains. Without this branch it fell into the generic message below
+        // and looked like a random flake, with nothing for the owner to act on.
+        setUnavailable(true);
+        setError('Apple sign-in is not available on this site yet. Please use Google or email sign-in.');
+        console.error(
+          '[AppleSignIn] auth/unauthorized-domain — add this origin to Firebase Auth > Settings > Authorized domains:',
+          window.location.origin,
+        );
+      } else if (code === 'auth/network-request-failed') {
+        // Transient: must NOT be reported as a permanent "use email instead".
+        setError('Network problem reaching Apple. Please check your connection and try again.');
       } else {
-        const e = err as { response?: { data?: { detail?: string } } };
-        setError(e?.response?.data?.detail ?? 'Apple sign-in failed. Please use email sign-in.');
+        setError(apiErrorMessage(err, 'Apple sign-in failed. Please use email sign-in.'));
       }
     } finally {
       setBusy(false);

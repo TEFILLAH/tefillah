@@ -5,7 +5,7 @@ import Logo from '../components/Logo';
 import GoogleSignInButton from '../components/GoogleSignInButton';
 import AppleSignInButton from '../components/AppleSignInButton';
 import PasswordInput from '../components/PasswordInput';
-import { GOOGLE_SIGNIN_ENABLED } from '../config';
+import { GOOGLE_SIGNIN_ENABLED, APPLE_SIGNIN_ENABLED } from '../config';
 import { useAuthStore } from '../store/authStore';
 
 export default function LoginPage() {
@@ -101,11 +101,13 @@ export default function LoginPage() {
           {isLoading ? <Loader2 size={18} className="animate-spin" /> : 'Sign In'}
         </button>
 
-        <div className="text-center">
-          <span className="divider-rule text-xs" style={{ color: 'var(--color-text-muted)' }}>or</span>
-        </div>
+        {(GOOGLE_SIGNIN_ENABLED || APPLE_SIGNIN_ENABLED) && (
+          <div className="text-center">
+            <span className="divider-rule text-xs" style={{ color: 'var(--color-text-muted)' }}>or</span>
+          </div>
+        )}
         {GOOGLE_SIGNIN_ENABLED && <GoogleSignInButton />}
-        <AppleSignInButton />
+        {APPLE_SIGNIN_ENABLED && <AppleSignInButton />}
 
         <p className="text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
           Don't have an account?{' '}

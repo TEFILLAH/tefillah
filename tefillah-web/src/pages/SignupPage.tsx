@@ -8,7 +8,7 @@ import PasswordInput from '../components/PasswordInput';
 import CountrySelect from '../components/CountrySelect';
 import PhoneCodeInput from '../components/PhoneCodeInput';
 import { countryByIso, DEFAULT_COUNTRY_ISO } from '../data/countries';
-import { GOOGLE_SIGNIN_ENABLED } from '../config';
+import { GOOGLE_SIGNIN_ENABLED, APPLE_SIGNIN_ENABLED } from '../config';
 import { useAuthStore } from '../store/authStore';
 
 export default function SignupPage() {
@@ -190,11 +190,13 @@ export default function SignupPage() {
           {isLoading ? <Loader2 size={18} className="animate-spin" /> : 'Create Account'}
         </button>
 
-        <div className="text-center">
-          <span className="divider-rule text-xs" style={{ color: 'var(--color-text-muted)' }}>or</span>
-        </div>
+        {(GOOGLE_SIGNIN_ENABLED || APPLE_SIGNIN_ENABLED) && (
+          <div className="text-center">
+            <span className="divider-rule text-xs" style={{ color: 'var(--color-text-muted)' }}>or</span>
+          </div>
+        )}
         {GOOGLE_SIGNIN_ENABLED && <GoogleSignInButton text="signup_with" />}
-        <AppleSignInButton text="signup_with" />
+        {APPLE_SIGNIN_ENABLED && <AppleSignInButton text="signup_with" />}
 
         <p className="text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
           Already have an account?{' '}
