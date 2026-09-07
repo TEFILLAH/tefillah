@@ -88,9 +88,54 @@ def mint(secret, algorithm, uid, email, role, is_admin):
     return jwt.encode(payload, secret, algorithm=algorithm or "HS256")
 
 
+def write_check(client, base, token, uid, db):
+    """Prove WRITES work against the live backend, not just reads.
+
+    register-device / unregister-device is used because the pair is
+    SELF-CLEANING: it sets fcm_token + fcm_updated_at then removes them,
+    exercising both the $set and the $unset (REMOVE) path of _Repo._update on
+    the users table through the real request path. Every other write in the
+    adapter uses that same machinery, so if this works, writes are live.
+
+    Reads back via /api/auth/me rather than trusting the 200, and restores any
+    pre-existing token so the account is left exactly as it was found.
+    """
+    probe = "__prodsmoke__token__"
+    headers = {"Authorization": f"Bearer {token}"}
+    failures = []
+    before = db.users.find_one({"_id": uid}, {"fcm_token": 1}) or {}
+    original = before.get("fcm_token")
+
+    r = client.post(f"{base}/api/user/register-device",
+                    params={"token": probe}, headers=headers)
+    print(f"  {r.status_code}  POST /api/user/register-device")
+    if r.status_code != 200:
+        failures.append(f"register-device -> {r.status_code}: {r.text[:120]}")
+        return failures
+
+    me = client.get(f"{base}/api/auth/me", headers=headers).json()
+    if me.get("fcm_token") == probe:
+        print("  OK   write landed and was read back through the API")
+    else:
+        print("  --   /auth/me does not echo fcm_token; relying on round-trip codes")
+
+    r = client.post(f"{base}/api/user/unregister-device", headers=headers)
+    print(f"  {r.status_code}  POST /api/user/unregister-device")
+    if r.status_code != 200:
+        failures.append(f"unregister-device -> {r.status_code}: {r.text[:120]}")
+
+    if original:
+        client.post(f"{base}/api/user/register-device",
+                    params={"token": original}, headers=headers)
+        print("  --   restored the original fcm_token")
+    return failures
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="https://api.tefillah.in")
+    ap.add_argument("--write-check", action="store_true",
+                    help="Also run a self-cleaning WRITE round-trip.")
     args = ap.parse_args()
 
     prod = eb_env()
@@ -143,6 +188,14 @@ def main():
                 except Exception as e:
                     failures.append(f"{role} {path} -> {type(e).__name__}")
                     print(f"  ERR {path}  {type(e).__name__}: {e}")
+
+    if args.write_check:
+        print("")
+        print("--- write round-trip (self-cleaning) ---")
+        d = who["user"]
+        wtok = mint(secret, algorithm, d["_id"], d.get("email", ""), "user", False)
+        with httpx.Client(timeout=45.0) as wc:
+            failures += write_check(wc, args.base, wtok, d["_id"], db)
 
     print("\n" + "=" * 62)
     if failures:

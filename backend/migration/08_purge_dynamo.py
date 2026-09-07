@@ -72,6 +72,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true",
                     help="Actually delete. Without it this only counts.")
+    ap.add_argument("--only", metavar="NAME",
+                    help="Purge just one logical table (e.g. counters).")
     args = ap.parse_args()
 
     backend = live_backend()
@@ -83,6 +85,8 @@ def main():
     dynamodb = boto3.resource("dynamodb", region_name=table_spec.REGION)
     total_seen = total_deleted = 0
     for name, spec in table_spec.TABLES.items():
+        if args.only and name != args.only:
+            continue
         table = dynamodb.Table(spec["table"])
         seen, deleted = purge(table, spec["pk"], spec.get("sk"), args.apply)
         total_seen += seen

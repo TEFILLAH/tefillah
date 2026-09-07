@@ -132,6 +132,17 @@ TABLES = {
     },
 
     # ---- counters: replaces counts + daily aggregations ---------------------
+    # ⚠ NOT MAINTAINED AT RUNTIME — DO NOT READ THESE VALUES.
+    # 04_backfill.py seeds ~117 counters, but repo/dynamo.py computes
+    # daily_counts/count() by scanning instead (the whole dataset is ~1000
+    # items, so a scan is milliseconds). Nothing increments these on write, so
+    # they are a point-in-time snapshot that drifts from reality the moment any
+    # row is inserted or deleted.
+    # They are left in place rather than deleted because purging them would mean
+    # weakening 08_purge_dynamo.py's guard, which refuses to touch any table
+    # while production serves from DynamoDB — that guard is worth far more than
+    # this cleanup. Before using counters for anything, add ADD/atomic-increment
+    # calls to every write path in repo/dynamo.py and re-seed.
     "counters": {
         "table": table("counters"),
         "pk": "counter_name",
