@@ -68,6 +68,8 @@ async def run():
     server.APPLE_BUNDLE_ID = BUNDLE
     server.APPLE_SERVICE_ID = SERVICE
 
+    real_get_keys = server._get_apple_keys      # kept for the throttle test
+
     async def fake_keys(force_refresh=False):
         return [_jwk()]
     server._get_apple_keys = fake_keys
@@ -133,6 +135,67 @@ async def run():
     routed = await server.verify_firebase_token(mint())
     check("verify_firebase_token routes Apple issuer to the Apple verifier",
           routed is not None and routed.get("provider") == "apple.com")
+
+    # ---- REGRESSION: a non-Apple token must NOT take the Apple path ---------
+    # This is the whole risk surface of adding the router: if a Firebase or
+    # Google token were mis-routed, every existing login would break.
+    called = {"apple": False}
+    real_apple = server.verify_apple_token
+    async def spy(token):
+        called["apple"] = True
+        return await real_apple(token)
+    server.verify_apple_token = spy
+    try:
+        firebase_like = mint(iss="https://securetoken.google.com/tefillah-2283c")
+        await server.verify_firebase_token(firebase_like)
+        check("non-Apple issuer does NOT reach the Apple verifier", not called["apple"])
+        called["apple"] = False
+        await server.verify_firebase_token("not-a-jwt-at-all")
+        check("non-JWT garbage does NOT reach the Apple verifier", not called["apple"])
+    finally:
+        server.verify_apple_token = real_apple
+
+    # ---- JWKS refetch is BOUNDED --------------------------------------------
+    # The kid lookup happens before signature verification, so forged tokens
+    # with random kids would otherwise each force a live fetch to Apple and get
+    # our egress IP throttled -- which breaks real sign-ins.
+    #
+    # This patches the NETWORK layer and runs the REAL _get_apple_keys, because
+    # the throttle lives inside that function: stubbing it out would measure
+    # nothing (an earlier version of this test did exactly that and "failed"
+    # against correct code).
+    fetches = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"keys": [_jwk()]}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url):
+            fetches["n"] += 1
+            return _Resp()
+
+    class _Httpx:
+        AsyncClient = _Client
+
+    real_httpx = server.httpx
+    server._get_apple_keys = real_get_keys
+    server.httpx = _Httpx
+    try:
+        # warm cache, as production would be after the first real sign-in
+        server._apple_jwks["keys"] = [_jwk()]
+        server._apple_jwks["fetched_at"] = datetime.now(timezone.utc).timestamp()
+        before = fetches["n"]
+        for _ in range(10):
+            await verify(mint(kid="forged-kid"))
+        spent = fetches["n"] - before
+        check(f"10 forged kids cause 0 extra live JWKS fetches (got {spent})", spent == 0)
+    finally:
+        server.httpx = real_httpx
+        server._get_apple_keys = fake_keys
 
     print()
     if failures:

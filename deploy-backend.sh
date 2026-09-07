@@ -17,7 +17,7 @@ APP="tefillah-api"
 ENV="tefillah-api-prod-v2"
 ZIP="tefillah-api-v4.zip"
 STAGE="_eb_build"
-LABEL="v34-dynamodb-repo-layer-$(date +%Y%m%d-%H%M%S)"
+LABEL="v35-apple-signin-$(date +%Y%m%d-%H%M%S)"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${REPO_ROOT}"

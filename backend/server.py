@@ -13,6 +13,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
+# Module scope on purpose: RS256 verification needs `cryptography`, and a
+# lazy import would let a broken install pass every deploy gate and fail
+# only at request time, silently, for Apple users alone.
+from jwt.algorithms import RSAAlgorithm
 import asyncio
 import httpx
 import json
@@ -1937,6 +1941,14 @@ class SocialAuthRequest(BaseModel):
     # used ONLY when the verified token carries no name of its own.
     full_name: Optional[str] = Field(None, max_length=100)
 
+    @field_validator('full_name')
+    @classmethod
+    def sanitize_full_name(cls, v: Optional[str]) -> Optional[str]:
+        # Same treatment as UserCreate.name: this is unverified client text that
+        # lands in users.name / partners.name and renders in the admin and
+        # partner dashboards.
+        return sanitize_input(v) if v else v
+
 class SocialAuthCompleteRequest(BaseModel):
     email: EmailStr
     name: str = Field(..., min_length=2, max_length=100)
@@ -1970,10 +1982,20 @@ _apple_jwks: dict = {"keys": [], "fetched_at": 0.0}
 APPLE_JWKS_TTL_SECONDS = 3600
 
 
+# The kid lookup necessarily happens BEFORE signature verification, so an
+# unauthenticated request carrying any JWT-shaped string with an Apple issuer
+# and a random kid would otherwise force a live fetch to Apple -- one forged
+# request, one outbound HTTPS call. Enough of them and Apple throttles our
+# egress IP, which breaks REAL sign-ins. This floor caps refetches at one per
+# minute per process while still picking up a genuine key rotation quickly.
+APPLE_JWKS_MIN_REFETCH_SECONDS = 60
+
+
 async def _get_apple_keys(force_refresh: bool = False) -> list:
     now = datetime.now(timezone.utc).timestamp()
-    fresh = (now - _apple_jwks["fetched_at"]) < APPLE_JWKS_TTL_SECONDS
-    if _apple_jwks["keys"] and fresh and not force_refresh:
+    age = now - _apple_jwks["fetched_at"]
+    fresh = age < APPLE_JWKS_TTL_SECONDS
+    if _apple_jwks["keys"] and fresh and not (force_refresh and age > APPLE_JWKS_MIN_REFETCH_SECONDS):
         return _apple_jwks["keys"]
     async with httpx.AsyncClient(timeout=10.0) as http_client:
         resp = await http_client.get(APPLE_JWKS_URL)
@@ -2015,7 +2037,6 @@ async def verify_apple_token(token: str) -> Optional[dict]:
             logger.warning(f"Apple token kid={kid!r} not present in Apple's JWKS")
             return None
 
-        from jwt.algorithms import RSAAlgorithm   # needs `cryptography`
         public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
 
         claims = jwt.decode(
