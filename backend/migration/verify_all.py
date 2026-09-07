@@ -99,6 +99,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", type=int, default=1,
                     help="1 = code-level gates only; 2+ = also the DynamoDB gates")
+    ap.add_argument("--prod", action="store_true",
+                    help="Compare against the PRODUCTION Mongo database. "
+                         "Required once DB_BACKEND=dynamo is live: the "
+                         "DynamoDB tables then hold production data, so "
+                         "comparing them to tefilah_test reports false "
+                         "mismatches. Read-only either way.")
     args = ap.parse_args()
 
     gates = [
@@ -109,12 +115,27 @@ def main():
     ]
     if args.phase >= 2:
         gates += [
+            # Post-cutover the DynamoDB tables hold PRODUCTION data, so the
+            # test-data comparisons stop being meaningful. --prod swaps them
+            # for checks that still are: parity against the real source, and
+            # a live smoke test of the deployed app.
             ("mongo->dynamo data parity", lambda: gate_script(
-                "migration/05_parity.py", ("--sample", "1000"))),
-            ("repo differential (mongo vs dynamo)", lambda: gate_script(
-                "migration/06_differential.py")),
-            ("golden harness (dynamo)  <-- CUTOVER GATE", lambda: gate_golden("dynamo")),
+                "migration/05_parity.py",
+                ("--sample", "1000")
+                + (("--source-db", "tefilah", "--i-know-this-is-production")
+                   if args.prod else ()))),
         ]
+        if args.prod:
+            gates.append(("live production smoke  <-- POST-CUTOVER GATE",
+                          lambda: gate_script("migration/09_prod_smoke.py",
+                                              ("--write-check",))))
+        else:
+            gates += [
+                ("repo differential (mongo vs dynamo)",
+                 lambda: gate_script("migration/06_differential.py")),
+                ("golden harness (dynamo)  <-- CUTOVER GATE",
+                 lambda: gate_golden("dynamo")),
+            ]
 
     print(f"\nRunning {len(gates)} gate(s)\n" + "=" * 64)
     results = []
