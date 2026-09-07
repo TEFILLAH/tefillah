@@ -32,6 +32,11 @@ cp "backend/server.py" "${STAGE}/server.py"
 # server.py now does `from repo import make_repos` AT IMPORT TIME, so the repo/
 # package must ship with it. Without this the app dies on startup with
 # ImportError and the environment goes red -- there is no partial-failure mode.
+# requirements.txt is tracked in backend/; _eb_build/ is gitignored, so the
+# bundle copy is NOT a source of truth and must be refreshed from the repo.
+echo "==> Staging backend/requirements.txt -> ${STAGE}/requirements.txt"
+cp "backend/requirements.txt" "${STAGE}/requirements.txt"
+
 echo "==> Staging backend/repo/ -> ${STAGE}/repo/"
 rm -rf "${STAGE}/repo"
 mkdir -p "${STAGE}/repo"
