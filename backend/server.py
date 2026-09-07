@@ -40,6 +40,12 @@ db = client.get_database(
     codec_options=CodecOptions(tz_aware=True, tzinfo=timezone.utc)
 )
 
+# Data-access layer. Collections are migrated behind `repos` one at a time;
+# anything not yet migrated still uses `db.<collection>` directly below.
+# Swapping DB_BACKEND (mongo -> dynamo) is the cutover, and the rollback.
+from repo import make_repos  # noqa: E402
+repos = make_repos(db)
+
 # JWT Configuration
 _jwt_default = 'tefilah-secret-key-2024-sacred'
 JWT_SECRET = os.environ.get('JWT_SECRET', _jwt_default)
@@ -677,11 +683,11 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     token_data = decode_token(credentials.credentials)
     
     if token_data.get("user_type") == "partner":
-        user = await db.partners.find_one({"_id": token_data["user_id"]})
+        user = await repos.partners.get(token_data["user_id"])
     elif token_data.get("user_type") == "admin":
-        user = await db.admins.find_one({"_id": token_data["user_id"]})
+        user = await repos.admins.get(token_data["user_id"])
     else:
-        user = await db.users.find_one({"_id": token_data["user_id"]})
+        user = await repos.users.get(token_data["user_id"])
     
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -710,7 +716,7 @@ async def get_current_partner(credentials: HTTPAuthorizationCredentials = Depend
     token_data = decode_token(credentials.credentials)
     if token_data.get("user_type") != "partner":
         raise HTTPException(status_code=403, detail="Partner access required")
-    partner = await db.partners.find_one({"_id": token_data["user_id"]})
+    partner = await repos.partners.get(token_data["user_id"])
     if not partner:
         raise HTTPException(status_code=401, detail="Partner not found")
     # Real-time status enforcement (mirrors login_partner): a disabled, deactivated,
@@ -722,10 +728,7 @@ async def get_current_partner(credentials: HTTPAuthorizationCredentials = Depend
     now = datetime.now(timezone.utc)
     last = partner.get("last_active")
     if not isinstance(last, datetime) or (now - last).total_seconds() > 30:
-        await db.partners.update_one(
-            {"_id": partner["_id"]},
-            {"$set": {"last_active": now}}
-        )
+        await repos.partners.update(partner["_id"], {"last_active": now})
         partner["last_active"] = now
     return partner
 
@@ -735,7 +738,7 @@ async def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(
     token_data = decode_token(credentials.credentials)
     if not token_data.get("is_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
-    admin = await db.admins.find_one({"_id": token_data["user_id"]})
+    admin = await repos.admins.get(token_data["user_id"])
     if not admin:
         raise HTTPException(status_code=401, detail="Admin not found")
     # Real-time status enforcement: a deactivated admin must lose access immediately,
@@ -767,7 +770,7 @@ async def log_activity(action: str, actor_type: str, actor_id: str, actor_name: 
         "ip_address": ip_address,
         "timestamp": datetime.now(timezone.utc),
     }
-    await db.activity_logs.insert_one(log_entry)
+    await repos.activity_logs.insert(log_entry)
 
 async def log_llm_usage(request_type: str, prompt_tokens: int, completion_tokens: int,
                         duration_ms: int, user_id: str = None, status: str = "success",
@@ -796,7 +799,7 @@ async def log_llm_usage(request_type: str, prompt_tokens: int, completion_tokens
         "error_message": error_message,
     }
     try:
-        await db.llm_logs.insert_one(log_entry)
+        await repos.llm_logs.insert(log_entry)
     except Exception as log_err:
         # Never let logging failures break the LLM response — just warn
         logger.warning(f"Failed to write llm_logs entry: {log_err}")
@@ -1322,11 +1325,11 @@ Be warm, personal and hopeful. Do NOT include any JSON formatting — just the p
         llm_result, llm_err = await generate_llm_response(f"Prayer request: {prayer_content[:300]}", comfort_system, prayer_user_id)
         if llm_result and not llm_err:
             comfort_message = llm_result.strip().strip('"').strip("'")
-            await db.notifications.update_one({"_id": notif_id}, {"$set": {"message": comfort_message}})
+            await repos.notifications.set_message(notif_id, comfort_message)
     except Exception as e:
         logger.warning(f"LLM comfort enrichment failed: {e}")
     try:
-        prayer_user = await db.users.find_one({"_id": prayer_user_id}, {"fcm_token": 1})
+        prayer_user = await repos.users.get(prayer_user_id)
         if prayer_user and prayer_user.get("fcm_token"):
             await send_fcm_push(
                 [prayer_user["fcm_token"]],
@@ -1395,7 +1398,7 @@ async def register_user(user_data: UserCreate, request: Request, background_task
         logger.warning(f"🚫 Registration email-limit hit for {email_lower} from {client_ip}")
         raise HTTPException(status_code=429, detail="Too many registration attempts for this email. Please try again later.")
 
-    existing = await db.users.find_one({"email": email_lower})
+    existing = await repos.users.get_by_email(email_lower)
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
@@ -1420,7 +1423,7 @@ async def register_user(user_data: UserCreate, request: Request, background_task
         "last_login": None,
     }
     
-    await db.users.insert_one(user_doc)
+    await repos.users.insert(user_doc)
     
     # Send verification email
     email_body = f"""
@@ -1476,7 +1479,7 @@ async def login_user(credentials: UserLogin, request: Request):
     if delay > 0:
         await asyncio.sleep(delay)
 
-    user = await db.users.find_one({"email": email_lower})
+    user = await repos.users.get_by_email(email_lower)
     if not user or not await asyncio.to_thread(verify_password, credentials.password, user.get("password_hash", "")):
         record_failed_login(identity_key)
         logger.warning(f"❌ Failed user login for {email_lower} from {client_ip}")
@@ -1489,10 +1492,7 @@ async def login_user(credentials: UserLogin, request: Request):
         raise HTTPException(status_code=403, detail="Account is disabled or suspended")
 
     # Update last login
-    await db.users.update_one(
-        {"_id": user["_id"]},
-        {"$set": {"last_login": datetime.now(timezone.utc)}}
-    )
+    await repos.users.update(user["_id"], {"last_login": datetime.now(timezone.utc)})
     
     await log_activity("user_login", "user", user["_id"], user["name"], ip_address=client_ip)
     
@@ -1525,12 +1525,12 @@ async def verify_email(data: VerificationRequest, request: Request):
         raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
 
     # Check both users and partners collections
-    user = await db.users.find_one({"email": data.email.lower()})
-    collection = db.users
+    user = await repos.users.get_by_email(data.email.lower())
+    collection = repos.users
 
     if not user:
-        user = await db.partners.find_one({"email": data.email.lower()})
-        collection = db.partners
+        user = await repos.partners.get_by_email(data.email.lower())
+        collection = repos.partners
 
     # Uniform response for unknown account vs wrong code (no enumeration).
     if not user:
@@ -1541,22 +1541,20 @@ async def verify_email(data: VerificationRequest, request: Request):
 
     # Per-account attempt cap: too many wrong codes invalidates the code (forces a resend).
     if user.get("verification_attempts", 0) >= 5:
-        await collection.update_one(
-            {"_id": user["_id"]},
-            {"$unset": {"verification_code": "", "verification_expires": ""}}
-        )
+        await collection.update(user["_id"], unset_fields={"verification_code": "", "verification_expires": ""})
         raise HTTPException(status_code=400, detail="Too many incorrect attempts. Please request a new code.")
 
     if user.get("verification_code") != data.code:
-        await collection.update_one({"_id": user["_id"]}, {"$inc": {"verification_attempts": 1}})
+        await collection.update(user["_id"], inc_fields={"verification_attempts": 1})
         raise HTTPException(status_code=400, detail="Invalid email or verification code")
 
     if user.get("verification_expires") and user["verification_expires"] < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Verification code has expired")
 
-    await collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {"is_verified": True}, "$unset": {"verification_code": "", "verification_expires": "", "verification_attempts": ""}}
+    await collection.update(
+        user["_id"],
+        set_fields={"is_verified": True},
+        unset_fields={"verification_code": "", "verification_expires": "", "verification_attempts": ""},
     )
 
     return {"message": "Email verified successfully"}
@@ -1577,12 +1575,12 @@ async def resend_verification(request: Request, background_tasks: BackgroundTask
         raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
 
     # Check both users and partners collections
-    user = await db.users.find_one({"email": target_email.lower()})
-    collection = db.users
+    user = await repos.users.get_by_email(target_email.lower())
+    collection = repos.users
 
     if not user:
-        user = await db.partners.find_one({"email": target_email.lower()})
-        collection = db.partners
+        user = await repos.partners.get_by_email(target_email.lower())
+        collection = repos.partners
 
     # Non-committal response so resend can't be used to enumerate accounts.
     if not user:
@@ -1592,14 +1590,11 @@ async def resend_verification(request: Request, background_tasks: BackgroundTask
         return {"message": "Email already verified"}
 
     new_code = generate_verification_code()
-    await collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {
-            "verification_code": new_code,
-            "verification_expires": datetime.now(timezone.utc) + timedelta(hours=24),
-            "verification_attempts": 0
-        }}
-    )
+    await collection.update(user["_id"], {
+        "verification_code": new_code,
+        "verification_expires": datetime.now(timezone.utc) + timedelta(hours=24),
+        "verification_attempts": 0,
+    })
     
     email_body = f"""
     <h2>Tefillah Verification Code</h2>
@@ -1620,8 +1615,8 @@ async def _counterpart_account(current_user: dict):
     if current_type not in ("user", "partner") or not email:
         return None, None
     if current_type == "user":
-        return "partner", await db.partners.find_one({"email": email})
-    return "user", await db.users.find_one({"email": email})
+        return "partner", await repos.partners.get_by_email(email)
+    return "user", await repos.users.get_by_email(email)
 
 def _switchable(current_user: dict, target_type: str, counterpart: dict) -> bool:
     """Both accounts must exist + be verified, and the TARGET must be usable — i.e. it
@@ -1716,8 +1711,8 @@ async def forgot_password(data: ForgotPasswordRequest, request: Request, backgro
     # has a password — otherwise a passwordless Google account shadows a resettable one.
     user = None
     collection = None
-    for coll in (db.users, db.partners, db.admins):
-        candidate = await coll.find_one({"email": email})
+    for coll in (repos.users, repos.partners, repos.admins):
+        candidate = await coll.get_by_email(email)
         if not candidate:
             continue
         social_only = (
@@ -1738,14 +1733,11 @@ async def forgot_password(data: ForgotPasswordRequest, request: Request, backgro
     reset_code = generate_verification_code()
     reset_expires = datetime.now(timezone.utc) + timedelta(minutes=30)
 
-    await collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {
-            "password_reset_code": reset_code,
-            "password_reset_expires": reset_expires,
-            "password_reset_attempts": 0,
-        }}
-    )
+    await collection.update(user["_id"], {
+        "password_reset_code": reset_code,
+        "password_reset_expires": reset_expires,
+        "password_reset_attempts": 0,
+    })
 
     email_body = f"""
     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
@@ -1782,8 +1774,8 @@ async def reset_password(data: ResetPasswordRequest, request: Request):
     user = None
     collection = None
     matched_type = None
-    for coll, ctype in ((db.users, "user"), (db.partners, "partner"), (db.admins, "admin")):
-        candidate = await coll.find_one({"email": email})
+    for coll, ctype in ((repos.users, "user"), (repos.partners, "partner"), (repos.admins, "admin")):
+        candidate = await coll.get_by_email(email)
         if not candidate:
             continue
         stored = candidate.get("password_reset_code")
@@ -1797,29 +1789,23 @@ async def reset_password(data: ResetPasswordRequest, request: Request):
         # Brute-force defense: count this wrong guess against every account on the email
         # that currently holds a live reset code, and burn the code once too many wrong
         # guesses accumulate — otherwise the 6-digit code is guessable within 30 minutes.
-        for coll in (db.users, db.partners, db.admins):
-            cand = await coll.find_one({"email": email, "password_reset_code": {"$exists": True}})
+        for coll in (repos.users, repos.partners, repos.admins):
+            cand = await coll.get_by_email_with_reset_code(email)
             if not cand:
                 continue
             attempts = int(cand.get("password_reset_attempts", 0)) + 1
             if attempts >= PASSWORD_RESET_MAX_ATTEMPTS:
-                await coll.update_one(
-                    {"_id": cand["_id"]},
-                    {"$unset": {"password_reset_code": "", "password_reset_expires": "", "password_reset_attempts": ""}},
-                )
+                await coll.update(cand["_id"], unset_fields={"password_reset_code": "", "password_reset_expires": "", "password_reset_attempts": ""})
                 logger.warning(f"🚫 Reset code burned after {attempts} wrong attempts for {email}")
             else:
-                await coll.update_one({"_id": cand["_id"]}, {"$set": {"password_reset_attempts": attempts}})
+                await coll.update(cand["_id"], {"password_reset_attempts": attempts})
         raise HTTPException(status_code=400, detail="Invalid reset code")
 
     expires = user.get("password_reset_expires")
 
     if expires and expires < datetime.now(timezone.utc):
         # Clean up expired code
-        await collection.update_one(
-            {"_id": user["_id"]},
-            {"$unset": {"password_reset_code": "", "password_reset_expires": "", "password_reset_attempts": ""}}
-        )
+        await collection.update(user["_id"], unset_fields={"password_reset_code": "", "password_reset_expires": "", "password_reset_attempts": ""})
         raise HTTPException(status_code=400, detail="Reset code has expired. Please request a new one.")
 
     # Set the new password and clear the reset code.
@@ -1827,20 +1813,14 @@ async def reset_password(data: ResetPasswordRequest, request: Request):
     _clear = {"password_reset_code": "", "password_reset_expires": "", "password_reset_attempts": ""}
     if matched_type == "admin":
         # An admin reset only ever touches the admin credential — never cascades elsewhere.
-        await db.admins.update_one(
-            {"_id": user["_id"]},
-            {"$set": {"password_hash": new_hash}, "$unset": _clear},
-        )
+        await repos.admins.update(user["_id"], {"password_hash": new_hash}, unset_fields=_clear)
     else:
         # Apply to the person's non-privileged (user + partner) accounts on this email so
         # all their normal logins stay in sync — and a previously social-login-only (Google)
         # account gains a usable password. Admin credentials are NEVER changed by a
         # user/partner reset: that would let a user-account reset seize admin access.
-        for c in (db.users, db.partners):
-            await c.update_one(
-                {"email": email},
-                {"$set": {"password_hash": new_hash}, "$unset": _clear},
-            )
+        for c in (repos.users, repos.partners):
+            await c.update_by_email(email, set_fields={"password_hash": new_hash}, unset_fields=_clear)
 
     logger.info(f"Password reset successful for {email}")
     return {"message": "Password has been reset successfully. You can now sign in with your new password."}
@@ -1853,11 +1833,11 @@ async def change_password(data: ChangePasswordRequest, current_user: dict = Depe
 
     # Determine collection
     if user_type == "partner":
-        collection = db.partners
+        collection = repos.partners
     elif user_type == "admin":
-        collection = db.admins
+        collection = repos.admins
     else:
-        collection = db.users
+        collection = repos.users
 
     # Verify current password
     if not current_user.get("password_hash"):
@@ -1873,10 +1853,7 @@ async def change_password(data: ChangePasswordRequest, current_user: dict = Depe
         raise HTTPException(status_code=400, detail="New password must be different from the current password")
 
     new_hash = hash_password(data.new_password)
-    await collection.update_one(
-        {"_id": current_user["_id"]},
-        {"$set": {"password_hash": new_hash}}
-    )
+    await collection.update(current_user["_id"], {"password_hash": new_hash})
 
     logger.info(f"Password changed for user {current_user['email']}")
     return {"message": "Password changed successfully"}
@@ -2047,17 +2024,14 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
 
     if auth_data.is_agent:
         # Check if partner already exists
-        existing_partner = await db.partners.find_one({"email": email})
+        existing_partner = await repos.partners.get_by_email(email)
         if existing_partner:
             # Apply the same status gate as login_partner before issuing a token.
             if existing_partner.get("status") in ("disabled", "pending_approval") or not existing_partner.get("is_active", True):
                 raise HTTPException(status_code=403, detail="Account is suspended or pending approval")
             # Login existing partner
             token = create_token(existing_partner["_id"], email, "partner")
-            await db.partners.update_one(
-                {"_id": existing_partner["_id"]},
-                {"$set": {"last_active": datetime.now(timezone.utc)}}
-            )
+            await repos.partners.update(existing_partner["_id"], {"last_active": datetime.now(timezone.utc)})
             return TokenResponse(
                 access_token=token,
                 user=UserResponse(
@@ -2103,7 +2077,7 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
             "created_at": datetime.now(timezone.utc),
             "last_active": datetime.now(timezone.utc),
         }
-        await db.partners.insert_one(partner_doc)
+        await repos.partners.insert(partner_doc)
 
         email_body = f"""
         <h2>Welcome to Tefillah Prayer Partners!</h2>
@@ -2126,16 +2100,13 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
         )
     else:
         # Regular user flow
-        existing_user = await db.users.find_one({"email": email})
+        existing_user = await repos.users.get_by_email(email)
         if existing_user:
             if existing_user.get("status") in ("disabled", "suspended"):
                 raise HTTPException(status_code=403, detail="Account suspended by administrator")
             # Login existing user
             token = create_token(existing_user["_id"], email, "user")
-            await db.users.update_one(
-                {"_id": existing_user["_id"]},
-                {"$set": {"last_login": datetime.now(timezone.utc)}}
-            )
+            await repos.users.update(existing_user["_id"], {"last_login": datetime.now(timezone.utc)})
             return TokenResponse(
                 access_token=token,
                 user=UserResponse(
@@ -2172,7 +2143,7 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
             "created_at": datetime.now(timezone.utc),
             "last_login": datetime.now(timezone.utc),
         }
-        await db.users.insert_one(user_doc)
+        await repos.users.insert(user_doc)
 
         email_body = f"""
         <h2>Welcome to Tefillah!</h2>
@@ -2223,7 +2194,7 @@ async def complete_social_auth(
     location_country = data.location_country.strip()
 
     if data.is_agent:
-        existing = await db.partners.find_one({"email": email})
+        existing = await repos.partners.get_by_email(email)
         if existing:
             # SECURITY (cross-collection takeover): minting a token for an ALREADY-EXISTING
             # partner requires a partner token. Otherwise a user-token holder who registered
@@ -2240,7 +2211,7 @@ async def complete_social_auth(
                 "location_city": location_city,
                 "location_country": location_country,
             }
-            await db.partners.update_one({"_id": existing["_id"]}, {"$set": update})
+            await repos.partners.update(existing["_id"], update)
             token = create_token(existing["_id"], email, "partner")
             return TokenResponse(
                 access_token=token,
@@ -2276,7 +2247,7 @@ async def complete_social_auth(
             "response_rate": 0.0, "capacity_limit": 5, "active_assignments": 0,
             "created_at": datetime.now(timezone.utc), "last_active": datetime.now(timezone.utc),
         }
-        await db.partners.insert_one(partner_doc)
+        await repos.partners.insert(partner_doc)
         email_body = f"<h2>Welcome to Tefillah!</h2><p>Your verification code: <strong>{verification_code}</strong></p>"
         background_tasks.add_task(send_email, email, "Verify Your Tefillah Partner Account", email_body)
         token = create_token(partner_id, email, "partner")
@@ -2291,7 +2262,7 @@ async def complete_social_auth(
         )
     else:
         address = (data.address or "").strip() or None
-        existing = await db.users.find_one({"email": email})
+        existing = await repos.users.get_by_email(email)
         if existing:
             # Mirror of the partner guard: adopting an EXISTING user requires a user token,
             # so a partner-token holder can't take over a same-email user account.
@@ -2305,7 +2276,7 @@ async def complete_social_auth(
             }
             if address:
                 update["address"] = address
-            await db.users.update_one({"_id": existing["_id"]}, {"$set": update})
+            await repos.users.update(existing["_id"], update)
             token = create_token(existing["_id"], email, "user")
             return TokenResponse(
                 access_token=token,
@@ -2333,7 +2304,7 @@ async def complete_social_auth(
             "verification_expires": datetime.now(timezone.utc) + timedelta(hours=24),
             "created_at": datetime.now(timezone.utc), "last_login": datetime.now(timezone.utc),
         }
-        await db.users.insert_one(user_doc)
+        await repos.users.insert(user_doc)
         email_body = f"<h2>Welcome to Tefillah!</h2><p>Your verification code: <strong>{verification_code}</strong></p>"
         background_tasks.add_task(send_email, email, "Verify Your Tefillah Account", email_body)
         token = create_token(user_id, email, "user")
@@ -2363,7 +2334,7 @@ async def register_partner(partner_data: PartnerCreate, request: Request, backgr
     # /partner/login). Previously this also checked db.users, which meant that
     # deleting a partner who *also* had a user account left their email
     # permanently un-registerable as a partner ("Email already registered").
-    existing_partner = await db.partners.find_one({"email": partner_data.email.lower()})
+    existing_partner = await repos.partners.get_by_email(partner_data.email.lower())
     if existing_partner:
         raise HTTPException(status_code=400, detail="This email is already registered as a prayer partner")
     
@@ -2371,11 +2342,9 @@ async def register_partner(partner_data: PartnerCreate, request: Request, backgr
     verification_code = generate_verification_code()
     
     # Find matching prayer cell
-    cell = await db.prayer_cells.find_one({
-        "location_city": {"$regex": re.escape(partner_data.location_city), "$options": "i"},
-        "location_country": {"$regex": re.escape(partner_data.location_country), "$options": "i"},
-        "is_active": True
-    })
+    cell = await repos.prayer_cells.find_for_location(
+        partner_data.location_city, partner_data.location_country
+    )
     
     partner_doc = {
         "_id": partner_id,
@@ -2402,11 +2371,11 @@ async def register_partner(partner_data: PartnerCreate, request: Request, backgr
         "last_active": None,
     }
     
-    await db.partners.insert_one(partner_doc)
+    await repos.partners.insert(partner_doc)
     
     # Update cell agent count
     if cell:
-        await db.prayer_cells.update_one({"_id": cell["_id"]}, {"$inc": {"agent_count": 1}})
+        await repos.prayer_cells.adjust_agent_count(cell["_id"], 1)
     
     # Send verification email
     email_body = f"""
@@ -2469,7 +2438,7 @@ async def login_partner(credentials: PartnerLogin, request: Request):
     if delay > 0:
         await asyncio.sleep(delay)
 
-    partner = await db.partners.find_one({"email": email_lower})
+    partner = await repos.partners.get_by_email(email_lower)
     if not partner or not await asyncio.to_thread(verify_password, credentials.password, partner.get("password_hash", "")):
         record_failed_login(identity_key)
         logger.warning(f"❌ Failed partner login for {email_lower} from {client_ip}")
@@ -2485,10 +2454,7 @@ async def login_partner(credentials: PartnerLogin, request: Request):
         raise HTTPException(status_code=403, detail="Your account is pending admin approval. You will be notified once approved.")
     
     # Update last active
-    await db.partners.update_one(
-        {"_id": partner["_id"]},
-        {"$set": {"last_active": datetime.now(timezone.utc)}}
-    )
+    await repos.partners.update(partner["_id"], {"last_active": datetime.now(timezone.utc)})
     
     await log_activity("partner_login", "partner", partner["_id"], partner["name"], ip_address=client_ip)
     
@@ -2525,9 +2491,10 @@ async def get_partner_stats(partner: dict = Depends(get_current_partner)):
     partner_id = partner["_id"]
     
     # Get prayer statistics
-    total_received = await db.prayer_requests.count_documents({"assigned_partner_id": partner_id})
-    completed = await db.prayer_requests.count_documents({"assigned_partner_id": partner_id, "status": "prayed"})
-    pending = await db.prayer_requests.count_documents({"assigned_partner_id": partner_id, "status": {"$in": ["pending", "assigned"]}})
+    pr = repos.prayer_requests
+    total_received = await pr.count(assigned_partner_id=partner_id)
+    completed = await pr.count(assigned_partner_id=partner_id, status="prayed")
+    pending = await pr.count(assigned_partner_id=partner_id, status_in=["pending", "assigned"])
 
     # Dashboard buckets (active = assigned, not yet prayed):
     #  New     → not opened by the partner yet
@@ -2535,50 +2502,25 @@ async def get_partner_stats(partner: dict = Depends(get_current_partner)):
     #  Overdue → opened, 24h+ elapsed, still not prayed
     now = datetime.now(timezone.utc)
     day_ago = now - timedelta(hours=24)
-    active = {"assigned_partner_id": partner_id, "status": "assigned"}
-    prayers_new = await db.prayer_requests.count_documents({**active, "seen_by_partner": {"$ne": True}})
-    prayers_assigned = await db.prayer_requests.count_documents({**active, "seen_by_partner": True, "seen_at": {"$gte": day_ago}})
-    prayers_overdue = await db.prayer_requests.count_documents({**active, "seen_by_partner": True, "seen_at": {"$lt": day_ago}})
+    prayers_new = await pr.count(assigned_partner_id=partner_id, status="assigned", seen=False)
+    prayers_assigned = await pr.count(assigned_partner_id=partner_id, status="assigned",
+                                      seen=True, seen_after=day_ago)
+    prayers_overdue = await pr.count(assigned_partner_id=partner_id, status="assigned",
+                                     seen=True, seen_before=day_ago)
 
     # Calculate response rate
     response_rate = (completed / total_received * 100) if total_received > 0 else 0
     
     # Get average response time
-    pipeline = [
-        {"$match": {"assigned_partner_id": partner_id, "status": "prayed", "prayed_at": {"$exists": True}, "assigned_at": {"$exists": True}}},
-        {"$project": {
-            "response_time": {"$subtract": ["$prayed_at", "$assigned_at"]}
-        }},
-        {"$group": {"_id": None, "avg_time": {"$avg": "$response_time"}}}
-    ]
-    avg_result = await db.prayer_requests.aggregate(pipeline).to_list(1)
-    avg_response_hours = (avg_result[0]["avg_time"] / 3600000) if avg_result and avg_result[0].get("avg_time") else 0
+    avg_response_hours = (await pr.avg_response_ms(partner_id)) / 3600000
     
     # Weekly activity (last 7 days)
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    weekly_pipeline = [
-        {"$match": {"assigned_partner_id": partner_id, "prayed_at": {"$gte": week_ago}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$prayed_at"}},
-            "count": {"$sum": 1}
-        }},
-        {"$sort": {"_id": 1}}
-    ]
-    # to_list(7) dropped the newest bucket: a 7-day window spans up to 8 calendar dates,
-    # sorted ascending, so today fell off. The date $match already bounds the result.
-    weekly_data = await db.prayer_requests.aggregate(weekly_pipeline).to_list(None)
+    weekly_data = await pr.daily_prayed_for_partner(partner_id, week_ago)
     
     # Monthly trend (last 30 days)
     month_ago = datetime.now(timezone.utc) - timedelta(days=30)
-    monthly_pipeline = [
-        {"$match": {"assigned_partner_id": partner_id, "prayed_at": {"$gte": month_ago}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$prayed_at"}},
-            "count": {"$sum": 1}
-        }},
-        {"$sort": {"_id": 1}}
-    ]
-    monthly_data = await db.prayer_requests.aggregate(monthly_pipeline).to_list(None)
+    monthly_data = await pr.daily_prayed_for_partner(partner_id, month_ago)
     
     return PartnerStats(
         total_prayers_received=total_received,
@@ -2616,11 +2558,16 @@ async def get_partner_requests(
         query["status"] = status
 
     skip = (page - 1) * limit
-    cursor = db.prayer_requests.find(query, {"_id": 1, "content": 1, "location_city": 1, "location_country": 1, "category": 1, "status": 1, "submitted_at": 1, "assigned_at": 1, "seen_by_partner": 1, "seen_at": 1, "user_id": 1})
-    cursor = cursor.sort("submitted_at", -1).skip(skip).limit(limit)
+    rows = await repos.prayer_requests.list_for_partner(
+        query,
+        fields={"_id": 1, "content": 1, "location_city": 1, "location_country": 1,
+                "category": 1, "status": 1, "submitted_at": 1, "assigned_at": 1,
+                "seen_by_partner": 1, "seen_at": 1, "user_id": 1},
+        skip=skip, limit=limit,
+    )
 
     requests = []
-    async for req in cursor:
+    for req in rows:
         try:
             requests.append(PrayerRequestForPartner(
                 id=req["_id"],
@@ -2644,13 +2591,14 @@ async def get_partner_requests(
 async def mark_request_seen(prayer_id: str, partner: dict = Depends(get_current_partner)):
     """Mark a 'New' request as opened by the partner — moves it from New to Assigned and
     starts its 24h response window + the 60-min minimum prayer timer."""
-    prayer = await db.prayer_requests.find_one({"_id": prayer_id, "assigned_partner_id": partner["_id"]}, {"seen_by_partner": 1})
+    prayer = await repos.prayer_requests.get_for_partner(
+        prayer_id, partner["_id"], fields={"seen_by_partner": 1}
+    )
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found or not assigned to you")
     if not prayer.get("seen_by_partner"):
-        await db.prayer_requests.update_one(
-            {"_id": prayer_id},
-            {"$set": {"seen_by_partner": True, "seen_at": datetime.now(timezone.utc)}},
+        await repos.prayer_requests.update_fields(
+            prayer_id, {"seen_by_partner": True, "seen_at": datetime.now(timezone.utc)}
         )
     return {"message": "Marked as seen"}
 
@@ -2667,30 +2615,28 @@ async def report_prayer_request(
     # Exclude prayed: mark-prayed leaves assigned_partner_id set, so without this a
     # partner could flag a prayer they already prayed, flipping it to "flagged" while
     # keeping its +1 in prayers_handled — quietly shrinking completed counts / response_rate.
-    prayer = await db.prayer_requests.find_one(
-        {"_id": prayer_id, "assigned_partner_id": partner["_id"], "status": {"$ne": "prayed"}}
+    prayer = await repos.prayer_requests.get_for_partner(
+        prayer_id, partner["_id"], exclude_prayed=True
     )
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found or not assigned to you")
-    await db.prayer_requests.update_one(
-        {"_id": prayer_id},
-        {
-            "$set": {
-                "reported": True,
-                "reported_by": partner["_id"],
-                "reported_by_name": partner.get("name", ""),
-                "reported_reason": (data.reason or "").strip()[:500],
-                "reported_at": datetime.now(timezone.utc),
-                "status": "flagged",
-                "assigned_partner_id": None,
-                "assigned_partner_name": None,
-                "assigned_cell_id": None,
-                "assigned_cell_name": None,
-                "assigned_at": None,
-                "seen_by_partner": False,
-            },
-            "$unset": {"seen_at": ""},
+    await repos.prayer_requests.update_fields(
+        prayer_id,
+        set_fields={
+            "reported": True,
+            "reported_by": partner["_id"],
+            "reported_by_name": partner.get("name", ""),
+            "reported_reason": (data.reason or "").strip()[:500],
+            "reported_at": datetime.now(timezone.utc),
+            "status": "flagged",
+            "assigned_partner_id": None,
+            "assigned_partner_name": None,
+            "assigned_cell_id": None,
+            "assigned_cell_name": None,
+            "assigned_at": None,
+            "seen_by_partner": False,
         },
+        unset_fields={"seen_at": ""},
     )
     await log_activity(
         "prayer_reported", "partner", partner["_id"], partner.get("name", ""),
@@ -2715,29 +2661,8 @@ async def partner_block_user(
                 status_code=400,
                 detail="Your block list is full. Please contact support to review it.",
             )
-        await db.partners.update_one(
-            {"_id": partner["_id"]},
-            {"$addToSet": {"blocked_users": data.user_id}},
-        )
-    await db.prayer_requests.update_many(
-        {
-            "assigned_partner_id": partner["_id"],
-            "user_id": data.user_id,
-            "status": {"$nin": ["prayed", "flagged"]},
-        },
-        {
-            "$set": {
-                "status": "pending",
-                "assigned_partner_id": None,
-                "assigned_partner_name": None,
-                "assigned_cell_id": None,
-                "assigned_cell_name": None,
-                "assigned_at": None,
-                "seen_by_partner": False,
-            },
-            "$unset": {"seen_at": ""},
-        },
-    )
+        await repos.partners.update(partner["_id"], add_to_set={"blocked_users": data.user_id})
+    await repos.prayer_requests.release_user_from_partner(partner["_id"], data.user_id)
     await log_activity(
         "user_blocked", "partner", partner["_id"], partner.get("name", ""),
         "user", data.user_id, None,
@@ -2754,19 +2679,15 @@ async def flag_prayer_ai_content(
     """A user flags the AI-generated comfort message / Bible verse on their own prayer
     as inappropriate or wrong. Recorded for review. Required for app-store moderation
     of AI-generated content."""
-    prayer = await db.prayer_requests.find_one(
-        {"_id": prayer_id, "user_id": current_user["_id"]}
-    )
+    prayer = await repos.prayer_requests.get_for_user(prayer_id, current_user["_id"])
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer not found")
-    await db.prayer_requests.update_one(
-        {"_id": prayer_id},
+    await repos.prayer_requests.update_fields(
+        prayer_id,
         {
-            "$set": {
-                "ai_flagged": True,
-                "ai_flag_reason": (data.reason or "").strip()[:500],
-                "ai_flagged_at": datetime.now(timezone.utc),
-            }
+            "ai_flagged": True,
+            "ai_flag_reason": (data.reason or "").strip()[:500],
+            "ai_flagged_at": datetime.now(timezone.utc),
         },
     )
     await log_activity(
@@ -2782,7 +2703,7 @@ async def mark_prayer_as_prayed(
     prayer_duration_minutes: int = Query(5, ge=1, le=180),
     partner: dict = Depends(get_current_partner)
 ):
-    prayer = await db.prayer_requests.find_one({"_id": prayer_id, "assigned_partner_id": partner["_id"]})
+    prayer = await repos.prayer_requests.get_for_partner(prayer_id, partner["_id"])
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found or not assigned to you")
     
@@ -2813,34 +2734,24 @@ async def mark_prayer_as_prayed(
     # client retry becomes a no-op (modified_count == 0) instead of running the whole body
     # twice — so partner stats, the submitter notification and the FCM push each fire exactly
     # once (no double-counted stats, no duplicate pushes, no doubled LLM cost).
-    result = await db.prayer_requests.update_one(
-        {"_id": prayer_id, "assigned_partner_id": partner["_id"], "status": {"$ne": "prayed"}},
-        {"$set": {
-            "status": "prayed",
-            "prayed_at": datetime.now(timezone.utc),
-            "prayer_duration_minutes": prayer_duration_minutes,
-        }}
+    modified = await repos.prayer_requests.mark_prayed(
+        prayer_id, partner["_id"], prayer_duration_minutes
     )
-    if result.modified_count == 0:
+    if modified == 0:
         raise HTTPException(status_code=400, detail="Prayer already marked as prayed")
 
     # Update partner stats
-    await db.partners.update_one(
-        {"_id": partner["_id"]},
-        {
-            "$inc": {
-                "prayers_handled": 1,
-                "total_prayer_time_minutes": prayer_duration_minutes,
-            },
-            "$set": {"last_active": datetime.now(timezone.utc)}
-        }
+    await repos.partners.update(
+        partner["_id"],
+        set_fields={"last_active": datetime.now(timezone.utc)},
+        inc_fields={"prayers_handled": 1, "total_prayer_time_minutes": prayer_duration_minutes},
     )
     
     # Update response rate
-    total = await db.prayer_requests.count_documents({"assigned_partner_id": partner["_id"]})
-    completed = await db.prayer_requests.count_documents({"assigned_partner_id": partner["_id"], "status": "prayed"})
+    total = await repos.prayer_requests.count(assigned_partner_id=partner["_id"])
+    completed = await repos.prayer_requests.count(assigned_partner_id=partner["_id"], status="prayed")
     response_rate = (completed / total * 100) if total > 0 else 0
-    await db.partners.update_one({"_id": partner["_id"]}, {"$set": {"response_rate": round(response_rate, 2)}})
+    await repos.partners.update(partner["_id"], {"response_rate": round(response_rate, 2)})
     
     await log_activity("prayer_completed", "partner", partner["_id"], partner["name"], "prayer", prayer_id)
 
@@ -2849,7 +2760,7 @@ async def mark_prayer_as_prayed(
     # the 6-9s LLM call when marking a prayer as prayed.
     prayer_user_id = prayer.get("user_id")
     # Only notify if the submitter still exists (avoid orphaned notifications to deleted users).
-    if prayer_user_id and await db.users.find_one({"_id": prayer_user_id}, {"_id": 1}):
+    if prayer_user_id and await repos.users.exists(prayer_user_id):
         default_comfort = "A prayer partner has prayed over your request and will continue to uphold you in prayer. May God's peace and comfort surround you today."
         notif_id = str(uuid.uuid4())
         notif_doc = {
@@ -2863,7 +2774,7 @@ async def mark_prayer_as_prayed(
             "read_by": [],
             "created_at": datetime.now(timezone.utc),
         }
-        await db.notifications.insert_one(notif_doc)
+        await repos.notifications.insert(notif_doc)
         asyncio.create_task(
             _enrich_prayed_notification(notif_id, prayer.get("content", ""), prayer_user_id, default_comfort)
         )
@@ -2877,21 +2788,13 @@ async def get_partner_notifications(
     limit: int = Query(20, ge=1, le=100),
     partner: dict = Depends(get_current_partner)
 ):
-    query = {
-        "$or": [
-            {"target_type": "all"},
-            {"target_type": "partners"},
-            {"target_ids": partner["_id"]}
-        ]
-    }
-    if unread_only:
-        query["read_by"] = {"$ne": partner["_id"]}
-    
     skip = (page - 1) * limit
-    cursor = db.notifications.find(query).sort("created_at", -1).skip(skip).limit(limit)
-    
+    rows = await repos.notifications.list_for(
+        partner["_id"], "partners", unread_only=unread_only, skip=skip, limit=limit
+    )
+
     notifications = []
-    async for notif in cursor:
+    for notif in rows:
         try:
             notifications.append(Notification(
                 id=notif["_id"],
@@ -2910,11 +2813,8 @@ async def get_partner_notifications(
 @api_router.post("/partner/notifications/{notification_id}/read")
 async def mark_notification_read(notification_id: str, partner: dict = Depends(get_current_partner)):
     partner_id = partner["_id"]
-    result = await db.notifications.update_one(
-        {"_id": notification_id, "$or": [{"target_type": "all"}, {"target_type": "partners"}, {"target_ids": partner_id}]},
-        {"$addToSet": {"read_by": partner_id}}
-    )
-    if result.matched_count == 0:
+    matched = await repos.notifications.mark_read(notification_id, partner_id, "partners")
+    if matched == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"message": "Notification marked as read"}
 
@@ -2932,7 +2832,7 @@ async def update_partner_profile(update_data: UserUpdate, partner: dict = Depend
         update_fields["organization"] = sanitize_input(update_data.organization)
 
     if update_fields:
-        await db.partners.update_one({"_id": partner["_id"]}, {"$set": update_fields})
+        await repos.partners.update(partner["_id"], update_fields)
 
     return {"message": "Profile updated successfully"}
 
@@ -2940,7 +2840,7 @@ async def update_partner_profile(update_data: UserUpdate, partner: dict = Depend
 async def upload_partner_photo(file: UploadFile = File(...), partner: dict = Depends(get_current_partner)):
     """Upload or replace the signed-in partner's profile photo."""
     url = await _save_avatar(partner["_id"], file, partner.get("profile_photo_url"))
-    await db.partners.update_one({"_id": partner["_id"]}, {"$set": {"profile_photo_url": url}})
+    await repos.partners.update(partner["_id"], {"profile_photo_url": url})
     return {"profile_photo_url": url}
 
 # ==================== ADMIN AUTH ====================
@@ -2953,7 +2853,7 @@ async def create_first_admin(admin_data: AdminCreate, request: Request):
     
     # VULN-02 (TASK-2): hard-fail once any admin exists (one-time bootstrap only,
     # and already gated by the X-Admin-Secret header above).
-    existing_admin = await db.admins.find_one({})
+    existing_admin = await repos.admins.any_exists()
     if existing_admin:
         raise HTTPException(status_code=409, detail="Admin already exists. Use admin invite flow.")
     
@@ -2969,7 +2869,7 @@ async def create_first_admin(admin_data: AdminCreate, request: Request):
         "last_login": None,
     }
     
-    await db.admins.insert_one(admin_doc)
+    await repos.admins.insert(admin_doc)
     
     token = create_token(admin_id, admin_data.email.lower(), "admin", True, expiration_hours=4)
     
@@ -3000,7 +2900,7 @@ async def login_admin(credentials: UserLogin, request: Request):
     if delay > 0:
         await asyncio.sleep(delay)
 
-    admin = await db.admins.find_one({"email": email_lower})
+    admin = await repos.admins.get_by_email(email_lower)
     if not admin or not await asyncio.to_thread(verify_password, credentials.password, admin.get("password_hash", "")):
         count = record_failed_login(identity_key, ADMIN_FAILED_LOGIN_MAX, ADMIN_FAILED_LOGIN_LOCK_DURATION)
         logger.warning(f"❌ Failed admin login attempt #{count} for {email_lower} from {client_ip}")
@@ -3009,10 +2909,7 @@ async def login_admin(credentials: UserLogin, request: Request):
     # Success — clear failed-attempt history
     reset_failed_logins(identity_key)
 
-    await db.admins.update_one(
-        {"_id": admin["_id"]},
-        {"$set": {"last_login": datetime.now(timezone.utc)}}
-    )
+    await repos.admins.update(admin["_id"], {"last_login": datetime.now(timezone.utc)})
 
     await log_activity("admin_login", "admin", admin["_id"], admin["name"], ip_address=client_ip)
     
@@ -3038,7 +2935,7 @@ async def login_admin(credentials: UserLogin, request: Request):
 @api_router.post("/admin/create-admin")
 async def create_admin(admin_data: AdminCreate, super_admin: dict = Depends(get_current_super_admin)):
     """Super Admin creates a new admin"""
-    existing = await db.admins.find_one({"email": admin_data.email.lower()})
+    existing = await repos.admins.get_by_email(admin_data.email.lower())
     if existing:
         raise HTTPException(status_code=400, detail="An admin with this email already exists")
 
@@ -3055,7 +2952,7 @@ async def create_admin(admin_data: AdminCreate, super_admin: dict = Depends(get_
         "last_login": None,
     }
 
-    await db.admins.insert_one(admin_doc)
+    await repos.admins.insert(admin_doc)
     await log_activity("admin_created", "admin", super_admin["_id"], super_admin["name"], "admin", admin_id,
                        {"new_admin_email": admin_data.email.lower()})
 
@@ -3067,13 +2964,13 @@ async def remove_admin(admin_id: str, super_admin: dict = Depends(get_current_su
     if admin_id == super_admin["_id"]:
         raise HTTPException(status_code=400, detail="Cannot remove yourself")
 
-    target = await db.admins.find_one({"_id": admin_id})
+    target = await repos.admins.get(admin_id)
     if not target:
         raise HTTPException(status_code=404, detail="Admin not found")
     if target.get("is_super_admin", False):
         raise HTTPException(status_code=400, detail="Cannot remove Super Admin")
 
-    await db.admins.delete_one({"_id": admin_id})
+    await repos.admins.delete(admin_id)
     await log_activity("admin_removed", "admin", super_admin["_id"], super_admin["name"], "admin", admin_id,
                        {"removed_admin_email": target["email"]})
 
@@ -3082,9 +2979,8 @@ async def remove_admin(admin_id: str, super_admin: dict = Depends(get_current_su
 @api_router.get("/admin/admins")
 async def list_admins(super_admin: dict = Depends(get_current_super_admin)):
     """Super Admin lists all admins"""
-    cursor = db.admins.find({}, {"password_hash": 0})
     admins = []
-    async for admin in cursor:
+    for admin in await repos.admins.list_without_secrets():
         admins.append({
             "id": admin["_id"],
             "name": admin["name"],
@@ -3104,30 +3000,27 @@ async def get_admin_stats(admin: dict = Depends(get_current_admin)):
     week_ago = today - timedelta(days=7)
     
     stats = AdminStats(
-        total_users=await db.users.count_documents({}),
-        total_partners=await db.partners.count_documents({}),
-        total_prayers=await db.prayer_requests.count_documents({}),
-        prayers_pending=await db.prayer_requests.count_documents({"status": "pending"}),
-        prayers_assigned=await db.prayer_requests.count_documents({"status": "assigned"}),
-        prayers_completed=await db.prayer_requests.count_documents({"status": {"$in": ["prayed", "completed"]}}),
-        total_llm_requests=await db.llm_logs.count_documents({}),
+        total_users=await repos.users.count(),
+        total_partners=await repos.partners.count(),
+        total_prayers=await repos.prayer_requests.count(),
+        prayers_pending=await repos.prayer_requests.count(status="pending"),
+        prayers_assigned=await repos.prayer_requests.count(status="assigned"),
+        prayers_completed=await repos.prayer_requests.count(status_in=["prayed", "completed"]),
+        total_llm_requests=await repos.llm_logs.count_all(),
         llm_tokens_used=0,
-        active_users_today=await db.users.count_documents({"last_login": {"$gte": today}}),
-        active_partners_today=await db.partners.count_documents({"last_active": {"$gte": today}}),
-        new_users_this_week=await db.users.count_documents({"created_at": {"$gte": week_ago}}),
-        new_partners_this_week=await db.partners.count_documents({"created_at": {"$gte": week_ago}}),
-        users_active=await db.users.count_documents({"status": {"$ne": "suspended"}}),
-        users_suspended=await db.users.count_documents({"status": "suspended"}),
-        partners_active=await db.partners.count_documents({"is_active": True}),
-        partners_inactive=await db.partners.count_documents({"is_active": False}),
-        partners_pending_approval=await db.partners.count_documents({"status": "pending_approval"}),
+        active_users_today=await repos.users.count(last_login_since=today),
+        active_partners_today=await repos.partners.count(last_active_since=today),
+        new_users_this_week=await repos.users.count(created_since=week_ago),
+        new_partners_this_week=await repos.partners.count(created_since=week_ago),
+        users_active=await repos.users.count(status_ne="suspended"),
+        users_suspended=await repos.users.count(status="suspended"),
+        partners_active=await repos.partners.count(is_active=True),
+        partners_inactive=await repos.partners.count(is_active=False),
+        partners_pending_approval=await repos.partners.count(status="pending_approval"),
     )
     
-    # Get total LLM tokens
-    pipeline = [{"$group": {"_id": None, "total": {"$sum": "$total_tokens"}}}]
-    token_result = await db.llm_logs.aggregate(pipeline).to_list(1)
-    if token_result:
-        stats.llm_tokens_used = token_result[0]["total"]
+    # Get total LLM tokens (0 when empty -- identical to the model default)
+    stats.llm_tokens_used = await repos.llm_logs.total_tokens()
     
     return stats
 
@@ -3148,59 +3041,22 @@ async def get_admin_analytics(
         group_format = "%Y-%m-%d"
     
     # User registrations over time
-    user_pipeline = [
-        {"$match": {"created_at": {"$gte": start_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": group_format, "date": "$created_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    user_trend = await db.users.aggregate(user_pipeline).to_list(100)
+    user_trend = await repos.users.daily_counts("created_at", start_date, fmt=group_format)
     
     # Prayer submissions over time
-    prayer_pipeline = [
-        {"$match": {"submitted_at": {"$gte": start_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": group_format, "date": "$submitted_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    prayer_trend = await db.prayer_requests.aggregate(prayer_pipeline).to_list(100)
+    prayer_trend = await repos.prayer_requests.daily_counts("submitted_at", start_date, fmt=group_format)
 
     # Partner registrations over time
-    partner_pipeline = [
-        {"$match": {"created_at": {"$gte": start_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": group_format, "date": "$created_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    partner_trend = await db.partners.aggregate(partner_pipeline).to_list(100)
+    partner_trend = await repos.partners.daily_counts("created_at", start_date, fmt=group_format)
 
     # Prayers answered (marked prayed/completed) over time — prefer prayed_at, fall back to updated_at
-    completion_pipeline = [
-        {"$match": {"status": {"$in": ["prayed", "completed"]}}},
-        {"$addFields": {"_completed_at": {"$ifNull": ["$prayed_at", "$updated_at"]}}},
-        {"$match": {"_completed_at": {"$gte": start_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": group_format, "date": "$_completed_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    completion_trend = await db.prayer_requests.aggregate(completion_pipeline).to_list(100)
+    completion_trend = await repos.prayer_requests.completion_trend(start_date, group_format)
 
     # Prayer categories breakdown
-    category_pipeline = [
-        {"$match": {"category": {"$exists": True}}},
-        {"$group": {"_id": "$category", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 10}
-    ]
-    categories = await db.prayer_requests.aggregate(category_pipeline).to_list(10)
+    categories = await repos.prayer_requests.category_counts(10)
     
     # LLM usage over time
-    llm_pipeline = [
-        {"$match": {"timestamp": {"$gte": start_date}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": group_format, "date": "$timestamp"}},
-            "requests": {"$sum": 1},
-            "tokens": {"$sum": "$total_tokens"}
-        }},
-        {"$sort": {"_id": 1}}
-    ]
-    llm_trend = await db.llm_logs.aggregate(llm_pipeline).to_list(100)
+    llm_trend = await repos.llm_logs.daily_usage(start_date, group_format)
     
     return {
         "user_registrations": [{"date": d["_id"], "count": d["count"]} for d in user_trend],
@@ -3222,60 +3078,25 @@ async def get_daily_reports(
     date_format = "%Y-%m-%d"
 
     # User registrations per day
-    user_reg_pipeline = [
-        {"$match": {"created_at": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$created_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    user_regs = {d["_id"]: d["count"] for d in await db.users.aggregate(user_reg_pipeline).to_list(100)}
+    user_regs = {d["_id"]: d["count"] for d in await repos.users.daily_counts("created_at", start_date, end_date, date_format)}
 
     # Active users per day (by last_login)
-    active_users_pipeline = [
-        {"$match": {"last_login": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$last_login"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    active_users = {d["_id"]: d["count"] for d in await db.users.aggregate(active_users_pipeline).to_list(100)}
+    active_users = {d["_id"]: d["count"] for d in await repos.users.daily_counts("last_login", start_date, end_date, date_format)}
 
     # Prayer submissions per day
-    prayer_sub_pipeline = [
-        {"$match": {"submitted_at": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$submitted_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    prayer_subs = {d["_id"]: d["count"] for d in await db.prayer_requests.aggregate(prayer_sub_pipeline).to_list(100)}
+    prayer_subs = {d["_id"]: d["count"] for d in await repos.prayer_requests.daily_counts("submitted_at", start_date, end_date, date_format)}
 
     # Prayers completed per day (status = prayed, using updated_at or completed_at)
-    prayer_comp_pipeline = [
-        {"$match": {"status": "prayed", "prayed_at": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$prayed_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    prayer_comps = {d["_id"]: d["count"] for d in await db.prayer_requests.aggregate(prayer_comp_pipeline).to_list(100)}
+    prayer_comps = {d["_id"]: d["count"] for d in await repos.prayer_requests.daily_completed(start_date, end_date, date_format)}
 
     # Prayers assigned per day
-    prayer_assign_pipeline = [
-        {"$match": {"status": {"$in": ["assigned", "prayed"]}, "assigned_at": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$assigned_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    prayer_assigns = {d["_id"]: d["count"] for d in await db.prayer_requests.aggregate(prayer_assign_pipeline).to_list(100)}
+    prayer_assigns = {d["_id"]: d["count"] for d in await repos.prayer_requests.daily_assigned(start_date, end_date, date_format)}
 
     # Partner registrations per day
-    partner_reg_pipeline = [
-        {"$match": {"created_at": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$created_at"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    partner_regs = {d["_id"]: d["count"] for d in await db.partners.aggregate(partner_reg_pipeline).to_list(100)}
+    partner_regs = {d["_id"]: d["count"] for d in await repos.partners.daily_counts("created_at", start_date, end_date, date_format)}
 
     # Active partners per day
-    active_partners_pipeline = [
-        {"$match": {"last_active": {"$gte": start_date, "$lte": end_date}}},
-        {"$group": {"_id": {"$dateToString": {"format": date_format, "date": "$last_active"}}, "count": {"$sum": 1}}},
-        {"$sort": {"_id": 1}}
-    ]
-    active_partners = {d["_id"]: d["count"] for d in await db.partners.aggregate(active_partners_pipeline).to_list(100)}
+    active_partners = {d["_id"]: d["count"] for d in await repos.partners.daily_counts("last_active", start_date, end_date, date_format)}
 
     # Build daily reports
     reports = []
@@ -3305,22 +3126,11 @@ async def get_admin_users(
     admin: dict = Depends(get_current_admin)
 ):
     check_admin_permission(admin, "manage_users")
-    query = {}
-    if search:
-        query["$or"] = [
-            {"name": {"$regex": re.escape(search), "$options": "i"}},
-            {"email": {"$regex": re.escape(search), "$options": "i"}}
-        ]
-    if status:
-        query["status"] = status
-
     skip = (page - 1) * limit
-    total = await db.users.count_documents(query)
-    cursor = db.users.find(query, {"password_hash": 0, "verification_code": 0})
-    cursor = cursor.sort("created_at", -1).skip(skip).limit(limit)
-    
+    total, docs = await repos.users.list(search=search, status=status, skip=skip, limit=limit)
+
     users = []
-    async for user in cursor:
+    for user in docs:
         users.append({
             "id": user["_id"],
             "name": user["name"],
@@ -3357,7 +3167,7 @@ async def update_user(user_id: str, status: Optional[str] = None, is_verified: O
         new_email = email.strip().lower()
         if "@" not in new_email or "." not in new_email.split("@")[-1]:
             raise HTTPException(status_code=400, detail="Invalid email address")
-        existing = await db.users.find_one({"email": new_email, "_id": {"$ne": user_id}})
+        existing = await repos.users.email_taken_by_other(new_email, user_id)
         if existing:
             raise HTTPException(status_code=400, detail="That email is already in use.")
         update_fields["email"] = new_email
@@ -3365,12 +3175,12 @@ async def update_user(user_id: str, status: Optional[str] = None, is_verified: O
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    target = await db.users.find_one({"_id": user_id}, {"email": 1, "name": 1, "status": 1})
+    target = await repos.users.get(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     old_status = target.get("status", "active")
 
-    await db.users.update_one({"_id": user_id}, {"$set": update_fields})
+    await repos.users.update(user_id, update_fields)
     await log_activity("user_updated", "admin", admin["_id"], admin["name"], "user", user_id, update_fields)
 
     # Email the member when an admin suspends or reactivates their account.
@@ -3399,31 +3209,20 @@ async def _release_partner_prayers(partner_id: str) -> None:
     """Release a partner's assigned (unprayed, unflagged) prayers back to the pending pool.
     Called on delete AND on disable/deactivate, so a sidelined partner's queue is never left
     stranded and invisible to every other partner."""
-    await db.prayer_requests.update_many(
-        {"assigned_partner_id": partner_id, "status": {"$nin": ["prayed", "flagged"]}},
-        {"$set": {
-            "assigned_partner_id": None, "assigned_partner_name": None,
-            "assigned_cell_id": None, "assigned_cell_name": None,
-            "status": "pending", "assigned_at": None, "seen_by_partner": False,
-        }, "$unset": {"seen_at": ""}},
-    )
+    await repos.prayer_requests.release_partner(partner_id)
 
 
 async def _cascade_delete_user(user_id: str, profile_photo_url: Optional[str] = None) -> int:
     """Delete a user AND its side effects so single- and bulk-delete never drift:
     remove the avatar, scrub the user's PII from their prayer requests (partners keep the
     content, anonymized), and detach them from notifications. Returns the deleted count."""
-    result = await db.users.delete_one({"_id": user_id})
-    if result.deleted_count == 0:
+    deleted = await repos.users.delete(user_id)
+    if deleted == 0:
         return 0
     await _delete_avatar(user_id, profile_photo_url)
-    await db.prayer_requests.update_many(
-        {"user_id": user_id},
-        {"$set": {"user_id": None, "user_name": None, "user_email": None, "is_anonymous": True}},
-    )
-    await db.notifications.update_many({"target_ids": user_id}, {"$pull": {"target_ids": user_id}})
-    await db.notifications.delete_many({"target_type": "specific", "target_ids": []})
-    return result.deleted_count
+    await repos.prayer_requests.anonymize_user(user_id)
+    await repos.notifications.detach_recipient(user_id)
+    return deleted
 
 
 async def _cascade_delete_partner(partner: dict) -> int:
@@ -3433,10 +3232,10 @@ async def _cascade_delete_partner(partner: dict) -> int:
     partner_id = partner["_id"]
     await _release_partner_prayers(partner_id)
     if partner.get("cell_id"):
-        await db.prayer_cells.update_one({"_id": partner["cell_id"]}, {"$inc": {"agent_count": -1}})
-    result = await db.partners.delete_one({"_id": partner_id})
+        await repos.prayer_cells.adjust_agent_count(partner["cell_id"], -1)
+    deleted = await repos.partners.delete(partner_id)
     await _delete_avatar(partner_id, partner.get("profile_photo_url"))
-    return result.deleted_count
+    return deleted
 
 
 @api_router.delete("/admin/users/{user_id}")
@@ -3447,7 +3246,7 @@ async def delete_user(user_id: str, admin: dict = Depends(get_current_admin)):
         if "all" not in perms and "manage_users" not in perms:
             raise HTTPException(status_code=403, detail="Insufficient permissions to delete users")
 
-    target = await db.users.find_one({"_id": user_id}, {"email": 1, "name": 1, "profile_photo_url": 1})
+    target = await repos.users.get(user_id)
     if not await _cascade_delete_user(user_id, (target or {}).get("profile_photo_url")):
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -3472,30 +3271,16 @@ async def get_admin_partners(
     admin: dict = Depends(get_current_admin)
 ):
     check_admin_permission(admin, "manage_partners")
-    query = {}
-    if search:
-        query["$or"] = [
-            {"name": {"$regex": re.escape(search), "$options": "i"}},
-            {"email": {"$regex": re.escape(search), "$options": "i"}},
-            {"organization": {"$regex": re.escape(search), "$options": "i"}}
-        ]
-    if status:
-        query["status"] = status
-    if partner_type:
-        query["partner_type"] = partner_type
-    
     skip = (page - 1) * limit
-    total = await db.partners.count_documents(query)
-    cursor = db.partners.find(query, {"password_hash": 0, "verification_code": 0})
-    cursor = cursor.sort("created_at", -1).skip(skip).limit(limit)
-    
+    total, docs = await repos.partners.list(
+        search=search, status=status, partner_type=partner_type, skip=skip, limit=limit
+    )
+
     partners = []
-    async for partner in cursor:
+    for partner in docs:
         # Count currently assigned (not yet prayed) prayers for this partner
-        assigned_count = await db.prayer_requests.count_documents({
-            "assigned_partner_id": partner["_id"],
-            "status": "assigned"
-        })
+        assigned_count = await repos.prayer_requests.count(
+            assigned_partner_id=partner["_id"], status="assigned")
         partners.append({
             "id": partner["_id"],
             "name": partner["name"],
@@ -3552,7 +3337,7 @@ async def update_partner(
         new_email = email.strip().lower()
         if "@" not in new_email or "." not in new_email.split("@")[-1]:
             raise HTTPException(status_code=400, detail="Invalid email address")
-        existing = await db.partners.find_one({"email": new_email, "_id": {"$ne": partner_id}})
+        existing = await repos.partners.email_taken_by_other(new_email, partner_id)
         if existing:
             raise HTTPException(status_code=400, detail="That email is already in use.")
         update_fields["email"] = new_email
@@ -3560,12 +3345,12 @@ async def update_partner(
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    target = await db.partners.find_one({"_id": partner_id}, {"email": 1, "name": 1, "status": 1})
+    target = await repos.partners.get(partner_id)
     if not target:
         raise HTTPException(status_code=404, detail="Partner not found")
     old_status = target.get("status", "active")
 
-    await db.partners.update_one({"_id": partner_id}, {"$set": update_fields})
+    await repos.partners.update(partner_id, update_fields)
     await log_activity("partner_updated", "admin", admin["_id"], admin["name"], "partner", partner_id, update_fields)
 
     # Disabling/deactivating a partner blocks their access (get_current_partner) but left
@@ -3603,14 +3388,11 @@ async def approve_partner(
 ):
     """Admin approves a pending partner — sets status to active and is_active to True."""
     check_admin_permission(admin, "manage_partners")
-    partner = await db.partners.find_one({"_id": partner_id})
+    partner = await repos.partners.get(partner_id)
     if not partner:
         raise HTTPException(status_code=404, detail="Partner not found")
 
-    await db.partners.update_one(
-        {"_id": partner_id},
-        {"$set": {"status": "active", "is_active": True, "is_verified": True}}
-    )
+    await repos.partners.update(partner_id, {"status": "active", "is_active": True, "is_verified": True})
 
     # Send push notification to partner if they have an FCM token
     if partner.get("fcm_token"):
@@ -3640,7 +3422,7 @@ async def delete_partner(partner_id: str, admin: dict = Depends(get_current_admi
         if "all" not in perms and "manage_partners" not in perms:
             raise HTTPException(status_code=403, detail="Insufficient permissions to delete partners")
 
-    partner = await db.partners.find_one({"_id": partner_id})
+    partner = await repos.partners.get(partner_id)
     if not partner:
         raise HTTPException(status_code=404, detail="Partner not found")
 
@@ -3660,25 +3442,18 @@ async def get_admin_prayers(
     admin: dict = Depends(get_current_admin)
 ):
     check_admin_permission(admin, "manage_prayers")
-    query = {}
-    if status:
-        query["status"] = status
-    if category:
-        query["category"] = category
-    if search:
-        query["content"] = {"$regex": re.escape(search), "$options": "i"}
-    
     skip = (page - 1) * limit
-    total = await db.prayer_requests.count_documents(query)
-    cursor = db.prayer_requests.find(query).sort("submitted_at", -1).skip(skip).limit(limit)
-    
+    total, rows = await repos.prayer_requests.list_admin(
+        status=status, category=category, search=search, skip=skip, limit=limit
+    )
+
     prayers = []
-    async for prayer in cursor:
+    for prayer in rows:
         # Fetch user contact info for admin visibility
         user_email = None
         user_phone = None
         if prayer.get("user_id"):
-            user_doc = await db.users.find_one({"_id": prayer["user_id"]}, {"email": 1, "phone": 1})
+            user_doc = await repos.users.get(prayer["user_id"])
             if user_doc:
                 user_email = user_doc.get("email")
                 user_phone = user_doc.get("phone")
@@ -3687,7 +3462,7 @@ async def get_admin_prayers(
         partner_email = None
         partner_phone = None
         if prayer.get("assigned_partner_id"):
-            partner_doc = await db.partners.find_one({"_id": prayer["assigned_partner_id"]}, {"email": 1, "phone": 1})
+            partner_doc = await repos.partners.get(prayer["assigned_partner_id"])
             if partner_doc:
                 partner_email = partner_doc.get("email")
                 partner_phone = partner_doc.get("phone")
@@ -3722,17 +3497,10 @@ async def get_admin_prayers(
 async def get_partners_for_assignment(admin: dict = Depends(get_current_admin)):
     """Get a lightweight list of active, verified partners with their capacity info for assignment dropdowns."""
     check_admin_permission(admin, "manage_prayers")
-    cursor = db.partners.find(
-        {"is_active": True, "is_verified": True},
-        {"_id": 1, "name": 1, "email": 1, "prayer_capacity": 1, "location_city": 1, "location_country": 1, "cell_name": 1}
-    ).sort("name", 1)
-
     partners = []
-    async for partner in cursor:
-        assigned_count = await db.prayer_requests.count_documents({
-            "assigned_partner_id": partner["_id"],
-            "status": "assigned"
-        })
+    for partner in await repos.partners.for_assignment():
+        assigned_count = await repos.prayer_requests.count(
+            assigned_partner_id=partner["_id"], status="assigned")
         capacity = partner.get("prayer_capacity", 10)
         partners.append({
             "id": partner["_id"],
@@ -3757,7 +3525,7 @@ async def assign_prayer_to_partner(
 ):
     check_admin_permission(admin, "manage_prayers")
     # Verify prayer exists
-    prayer = await db.prayer_requests.find_one({"_id": prayer_id})
+    prayer = await repos.prayer_requests.get(prayer_id)
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found")
     # A prayed prayer is DONE. Reassigning it (this endpoint sets status back to
@@ -3768,7 +3536,7 @@ async def assign_prayer_to_partner(
         raise HTTPException(status_code=400, detail="This prayer has already been prayed and cannot be reassigned.")
 
     # Verify partner exists and is active
-    partner = await db.partners.find_one({"_id": partner_id})
+    partner = await repos.partners.get(partner_id)
     if not partner:
         raise HTTPException(status_code=404, detail="Partner not found")
     if not partner.get("is_active", False):
@@ -3783,10 +3551,8 @@ async def assign_prayer_to_partner(
 
     # Check partner capacity
     capacity = partner.get("prayer_capacity", 10)
-    assigned_count = await db.prayer_requests.count_documents({
-        "assigned_partner_id": partner_id,
-        "status": "assigned"
-    })
+    assigned_count = await repos.prayer_requests.count(
+        assigned_partner_id=partner_id, status="assigned")
     if assigned_count >= capacity:
         raise HTTPException(
             status_code=400,
@@ -3802,25 +3568,23 @@ async def assign_prayer_to_partner(
     # assigning it counts as reviewing and clearing the report, so we drop the
     # report metadata here. (Silent release paths below must NOT do this — they
     # exclude 'flagged' so reported content can't be recycled without review.)
-    await db.prayer_requests.update_one(
-        {"_id": prayer_id},
-        {
-            "$set": {
-                "assigned_partner_id": partner["_id"],
-                "assigned_partner_name": partner["name"],
-                "assigned_cell_id": partner.get("cell_id"),
-                "assigned_cell_name": partner.get("cell_name"),
-                "status": "assigned",
-                "assigned_at": datetime.now(timezone.utc),
-                "seen_by_partner": False,
-                "reported": False,
-            },
-            "$unset": {
-                "seen_at": "",
-                "reported_by": "", "reported_by_name": "",
-                "reported_reason": "", "reported_at": "",
-            },
-        }
+    await repos.prayer_requests.update_fields(
+        prayer_id,
+        set_fields={
+            "assigned_partner_id": partner["_id"],
+            "assigned_partner_name": partner["name"],
+            "assigned_cell_id": partner.get("cell_id"),
+            "assigned_cell_name": partner.get("cell_name"),
+            "status": "assigned",
+            "assigned_at": datetime.now(timezone.utc),
+            "seen_by_partner": False,
+            "reported": False,
+        },
+        unset_fields={
+            "seen_at": "",
+            "reported_by": "", "reported_by_name": "",
+            "reported_reason": "", "reported_at": "",
+        },
     )
 
     await log_activity(
@@ -3843,7 +3607,7 @@ async def unassign_prayer(
     admin: dict = Depends(get_current_admin)
 ):
     check_admin_permission(admin, "manage_prayers")
-    prayer = await db.prayer_requests.find_one({"_id": prayer_id})
+    prayer = await repos.prayer_requests.get(prayer_id)
     if not prayer:
         raise HTTPException(status_code=404, detail="Prayer request not found")
 
@@ -3857,21 +3621,7 @@ async def unassign_prayer(
     # Status filter guards the read-then-write race: if the partner marks this prayer
     # prayed between the check above and here, this update must NOT silently revert it
     # to pending (which would let it be prayed + counted twice).
-    await db.prayer_requests.update_one(
-        {"_id": prayer_id, "status": {"$nin": ["prayed", "flagged"]}},
-        {
-            "$set": {
-                "assigned_partner_id": None,
-                "assigned_partner_name": None,
-                "assigned_cell_id": None,
-                "assigned_cell_name": None,
-                "status": "pending",
-                "assigned_at": None,
-                "seen_by_partner": False,
-            },
-            "$unset": {"seen_at": ""},
-        }
-    )
+    await repos.prayer_requests.unassign(prayer_id)
 
     await log_activity(
         "prayer_unassigned", "admin", admin["_id"], admin["name"],
@@ -3889,16 +3639,11 @@ async def get_llm_logs(
     admin: dict = Depends(get_current_admin)
 ):
     check_admin_permission(admin, "view_analytics")
-    query = {}
-    if status:
-        query["status"] = status
-    
     skip = (page - 1) * limit
-    total = await db.llm_logs.count_documents(query)
-    cursor = db.llm_logs.find(query).sort("timestamp", -1).skip(skip).limit(limit)
-    
+    total, docs = await repos.llm_logs.list(status=status, skip=skip, limit=limit)
+
     logs = []
-    async for log in cursor:
+    for log in docs:
         logs.append({
             "id": log["_id"],
             "request_type": log.get("request_type", "unknown"),
@@ -3923,18 +3668,13 @@ async def get_activity_logs(
     admin: dict = Depends(get_current_admin)
 ):
     check_admin_permission(admin, "view_analytics")
-    query = {}
-    if action:
-        query["action"] = action
-    if actor_type:
-        query["actor_type"] = actor_type
-    
     skip = (page - 1) * limit
-    total = await db.activity_logs.count_documents(query)
-    cursor = db.activity_logs.find(query).sort("timestamp", -1).skip(skip).limit(limit)
-    
+    total, docs = await repos.activity_logs.list(
+        action=action, actor_type=actor_type, skip=skip, limit=limit
+    )
+
     logs = []
-    async for log in cursor:
+    for log in docs:
         logs.append({
             "id": log["_id"],
             "action": log.get("action", "unknown"),
@@ -3965,7 +3705,7 @@ async def create_notification(notification: NotificationCreate, admin: dict = De
         "created_at": datetime.now(timezone.utc),
     }
     
-    await db.notifications.insert_one(notif_doc)
+    await repos.notifications.insert(notif_doc)
     await log_activity("notification_created", "admin", admin["_id"], admin["name"])
     
     return {"message": "Notification created", "id": notif_doc["_id"]}
@@ -3973,17 +3713,13 @@ async def create_notification(notification: NotificationCreate, admin: dict = De
 @api_router.get("/admin/export/{data_type}")
 async def export_data(data_type: str, export_format: str = Query("json", alias="format"), admin: dict = Depends(get_current_super_admin)):
     if data_type == "users":
-        cursor = db.users.find({}, {"password_hash": 0, "verification_code": 0})
-        data = await cursor.to_list(10000)
+        data = await repos.users.export_without_secrets(10000)
     elif data_type == "partners":
-        cursor = db.partners.find({}, {"password_hash": 0, "verification_code": 0})
-        data = await cursor.to_list(10000)
+        data = await repos.partners.export_without_secrets(10000)
     elif data_type == "prayers":
-        cursor = db.prayer_requests.find({})
-        data = await cursor.to_list(10000)
+        data = await repos.prayer_requests.export(10000)
     elif data_type == "llm_logs":
-        cursor = db.llm_logs.find({})
-        data = await cursor.to_list(10000)
+        data = await repos.llm_logs.export(10000)
     else:
         raise HTTPException(status_code=400, detail="Invalid data type")
     
@@ -4013,17 +3749,13 @@ async def export_csv_download(data_type: str, admin: dict = Depends(get_current_
     check_admin_permission(admin, "export_data")
 
     if data_type == "users":
-        cursor = db.users.find({}, {"password_hash": 0, "verification_code": 0})
-        data = await cursor.to_list(50000)
+        data = await repos.users.export_without_secrets(50000)
     elif data_type == "partners":
-        cursor = db.partners.find({}, {"password_hash": 0, "verification_code": 0})
-        data = await cursor.to_list(50000)
+        data = await repos.partners.export_without_secrets(50000)
     elif data_type == "prayers":
-        cursor = db.prayer_requests.find({})
-        data = await cursor.to_list(50000)
+        data = await repos.prayer_requests.export(50000)
     elif data_type == "activity_logs":
-        cursor = db.activity_logs.find({}).sort("timestamp", -1).limit(10000)
-        data = await cursor.to_list(10000)
+        data = await repos.activity_logs.export(10000)
     else:
         raise HTTPException(status_code=400, detail="Invalid data type. Use: users, partners, prayers, activity_logs")
 
@@ -4060,7 +3792,7 @@ async def export_csv_download(data_type: str, admin: dict = Depends(get_current_
 @api_router.post("/admin/create-admin-with-permissions")
 async def create_admin_with_permissions(admin_data: AdminCreateWithPermissions, super_admin: dict = Depends(get_current_super_admin)):
     """Super Admin creates a new admin with specific permissions."""
-    existing = await db.admins.find_one({"email": admin_data.email.lower()})
+    existing = await repos.admins.get_by_email(admin_data.email.lower())
     if existing:
         raise HTTPException(status_code=400, detail="An admin with this email already exists")
 
@@ -4083,7 +3815,7 @@ async def create_admin_with_permissions(admin_data: AdminCreateWithPermissions, 
         "last_login": None,
     }
 
-    await db.admins.insert_one(admin_doc)
+    await repos.admins.insert(admin_doc)
     await log_activity("admin_created", "admin", super_admin["_id"], super_admin["name"], "admin", admin_id,
                        {"new_admin_email": admin_data.email.lower(), "permissions": admin_data.permissions})
 
@@ -4096,7 +3828,7 @@ async def create_admin_with_permissions(admin_data: AdminCreateWithPermissions, 
 @api_router.put("/admin/admins/{admin_id}/permissions")
 async def update_admin_permissions(admin_id: str, update_data: AdminUpdatePermissions, super_admin: dict = Depends(get_current_super_admin)):
     """Super Admin updates an admin's permissions or active status."""
-    target = await db.admins.find_one({"_id": admin_id})
+    target = await repos.admins.get(admin_id)
     if not target:
         raise HTTPException(status_code=404, detail="Admin not found")
     if target.get("is_super_admin", False):
@@ -4115,7 +3847,7 @@ async def update_admin_permissions(admin_id: str, update_data: AdminUpdatePermis
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    await db.admins.update_one({"_id": admin_id}, {"$set": update_fields})
+    await repos.admins.update(admin_id, update_fields)
     await log_activity("admin_permissions_updated", "admin", super_admin["_id"], super_admin["name"], "admin", admin_id, update_fields)
 
     return {"message": f"Admin '{target['name']}' updated successfully", "updates": update_fields}
@@ -4153,29 +3885,29 @@ async def bulk_user_action(bulk: BulkUserAction, admin: dict = Depends(get_curre
         if not admin.get("is_super_admin", False):
             raise HTTPException(status_code=403, detail="Only Super Admin can bulk delete users")
         for uid in bulk.user_ids:
-            prof = await db.users.find_one({"_id": uid}, {"profile_photo_url": 1})
+            prof = await repos.users.get(uid)
             deleted = await _cascade_delete_user(uid, (prof or {}).get("profile_photo_url"))
             results["success" if deleted else "failed"] += 1
 
     elif bulk.action == "suspend":
         for uid in bulk.user_ids:
-            result = await db.users.update_one({"_id": uid}, {"$set": {"status": "suspended"}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.users.update(uid, {"status": "suspended"})
+            results["success" if matched else "failed"] += 1
 
     elif bulk.action == "activate":
         for uid in bulk.user_ids:
-            result = await db.users.update_one({"_id": uid}, {"$set": {"status": "active"}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.users.update(uid, {"status": "active"})
+            results["success" if matched else "failed"] += 1
 
     elif bulk.action == "verify":
         for uid in bulk.user_ids:
-            result = await db.users.update_one({"_id": uid}, {"$set": {"is_verified": True}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.users.update(uid, {"is_verified": True})
+            results["success" if matched else "failed"] += 1
 
     elif bulk.action == "unverify":
         for uid in bulk.user_ids:
-            result = await db.users.update_one({"_id": uid}, {"$set": {"is_verified": False}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.users.update(uid, {"is_verified": False})
+            results["success" if matched else "failed"] += 1
     else:
         raise HTTPException(status_code=400, detail=f"Invalid action: '{bulk.action}'. Valid: delete, suspend, activate, verify, unverify")
 
@@ -4201,19 +3933,19 @@ async def bulk_partner_action(bulk: BulkPartnerAction, admin: dict = Depends(get
         if not admin.get("is_super_admin", False):
             raise HTTPException(status_code=403, detail="Only Super Admin can bulk delete partners")
         for pid in bulk.partner_ids:
-            partner = await db.partners.find_one({"_id": pid})
+            partner = await repos.partners.get(pid)
             deleted = await _cascade_delete_partner(partner) if partner else 0
             results["success" if deleted else "failed"] += 1
 
     elif bulk.action == "activate":
         for pid in bulk.partner_ids:
-            result = await db.partners.update_one({"_id": pid}, {"$set": {"is_active": True}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.partners.update(pid, {"is_active": True})
+            results["success" if matched else "failed"] += 1
 
     elif bulk.action == "deactivate":
         for pid in bulk.partner_ids:
-            result = await db.partners.update_one({"_id": pid}, {"$set": {"is_active": False}})
-            if result.matched_count > 0:
+            matched = await repos.partners.update(pid, {"is_active": False})
+            if matched:
                 await _release_partner_prayers(pid)  # don't strand their queue
                 results["success"] += 1
             else:
@@ -4221,13 +3953,13 @@ async def bulk_partner_action(bulk: BulkPartnerAction, admin: dict = Depends(get
 
     elif bulk.action == "verify":
         for pid in bulk.partner_ids:
-            result = await db.partners.update_one({"_id": pid}, {"$set": {"is_verified": True}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.partners.update(pid, {"is_verified": True})
+            results["success" if matched else "failed"] += 1
 
     elif bulk.action == "unverify":
         for pid in bulk.partner_ids:
-            result = await db.partners.update_one({"_id": pid}, {"$set": {"is_verified": False}})
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.partners.update(pid, {"is_verified": False})
+            results["success" if matched else "failed"] += 1
     else:
         raise HTTPException(status_code=400, detail=f"Invalid action: '{bulk.action}'. Valid: delete, activate, deactivate, verify, unverify")
 
@@ -4253,32 +3985,28 @@ async def bulk_prayer_action(bulk: BulkPrayerAction, admin: dict = Depends(get_c
         if not admin.get("is_super_admin", False):
             raise HTTPException(status_code=403, detail="Only Super Admin can bulk delete prayers")
         for pid in bulk.prayer_ids:
-            result = await db.prayer_requests.delete_one({"_id": pid})
-            results["success" if result.deleted_count > 0 else "failed"] += 1
+            deleted = await repos.prayer_requests.delete(pid)
+            results["success" if deleted else "failed"] += 1
 
     elif bulk.action == "unassign":
         for pid in bulk.prayer_ids:
             # Never silently release reported ('flagged') content back to the pool —
             # it stays out of circulation until an admin reviews it.
-            result = await db.prayer_requests.update_one(
-                {"_id": pid, "status": {"$nin": ["prayed", "flagged"]}},
-                {"$set": {"assigned_partner_id": None, "assigned_partner_name": None, "status": "pending", "assigned_at": None, "seen_by_partner": False}, "$unset": {"seen_at": ""}}
-            )
-            results["success" if result.matched_count > 0 else "failed"] += 1
+            matched = await repos.prayer_requests.bulk_unassign(pid)
+            results["success" if matched else "failed"] += 1
 
     elif bulk.action == "assign":
         if not bulk.partner_id:
             raise HTTPException(status_code=400, detail="partner_id required for bulk assign")
-        partner = await db.partners.find_one({"_id": bulk.partner_id})
+        partner = await repos.partners.get(bulk.partner_id)
         if not partner:
             raise HTTPException(status_code=404, detail="Partner not found")
         blocked = partner.get("blocked_users") or []
         # Enforce capacity (single-assign does; bulk did not — one call could put 100
         # prayers on a capacity-10 partner). Cap to the remaining slots.
         capacity = partner.get("prayer_capacity", 10)
-        assigned_count = await db.prayer_requests.count_documents(
-            {"assigned_partner_id": partner["_id"], "status": "assigned"}
-        )
+        assigned_count = await repos.prayer_requests.count(
+            assigned_partner_id=partner["_id"], status="assigned")
         remaining = max(0, capacity - assigned_count)
         for pid in bulk.prayer_ids:
             if remaining <= 0:
@@ -4286,12 +4014,9 @@ async def bulk_prayer_action(bulk: BulkPrayerAction, admin: dict = Depends(get_c
                 continue
             # Respect the partner's block list (mirrors single-assign): never hand a
             # blocked user's request to the partner who blocked them.
-            query = {"_id": pid, "status": "pending"}
-            if blocked:
-                query["user_id"] = {"$nin": blocked}
-            result = await db.prayer_requests.update_one(
-                query,
-                {"$set": {
+            matched = await repos.prayer_requests.assign_if_pending(
+                pid,
+                {
                     "assigned_partner_id": partner["_id"],
                     "assigned_partner_name": partner["name"],
                     "assigned_cell_id": partner.get("cell_id"),
@@ -4299,9 +4024,10 @@ async def bulk_prayer_action(bulk: BulkPrayerAction, admin: dict = Depends(get_c
                     "status": "assigned",
                     "assigned_at": datetime.now(timezone.utc),
                     "seen_by_partner": False,
-                }, "$unset": {"seen_at": ""}}
+                },
+                blocked=blocked,
             )
-            if result.matched_count > 0:
+            if matched > 0:
                 results["success"] += 1
                 remaining -= 1
             else:
@@ -4328,25 +4054,15 @@ async def send_push_notification(notif: PushNotificationRequest, background_task
     # Collect device tokens based on target
     tokens = []
     if notif.target == "all":
-        user_cursor = db.users.find({"fcm_token": {"$exists": True, "$ne": None}}, {"fcm_token": 1})
-        async for user in user_cursor:
-            tokens.append(user["fcm_token"])
-        partner_cursor = db.partners.find({"fcm_token": {"$exists": True, "$ne": None}}, {"fcm_token": 1})
-        async for partner in partner_cursor:
-            tokens.append(partner["fcm_token"])
+        tokens.extend(await repos.users.fcm_tokens())
+        tokens.extend(await repos.partners.fcm_tokens())
     elif notif.target == "users":
-        cursor = db.users.find({"fcm_token": {"$exists": True, "$ne": None}}, {"fcm_token": 1})
-        async for user in cursor:
-            tokens.append(user["fcm_token"])
+        tokens.extend(await repos.users.fcm_tokens())
     elif notif.target == "partners":
-        cursor = db.partners.find({"fcm_token": {"$exists": True, "$ne": None}}, {"fcm_token": 1})
-        async for partner in cursor:
-            tokens.append(partner["fcm_token"])
+        tokens.extend(await repos.partners.fcm_tokens())
     elif notif.target == "specific" and notif.target_ids:
-        for collection in [db.users, db.partners]:
-            cursor = collection.find({"_id": {"$in": notif.target_ids}, "fcm_token": {"$exists": True, "$ne": None}}, {"fcm_token": 1})
-            async for doc in cursor:
-                tokens.append(doc["fcm_token"])
+        for repo in (repos.users, repos.partners):
+            tokens.extend(await repo.fcm_tokens_for_ids(notif.target_ids))
     else:
         raise HTTPException(status_code=400, detail="Invalid target. Use: all, users, partners, specific")
 
@@ -4368,7 +4084,7 @@ async def send_push_notification(notif: PushNotificationRequest, background_task
         "created_at": datetime.now(timezone.utc),
         "push_result": {"status": "queued", "total_tokens": len(tokens)},
     }
-    await db.notifications.insert_one(notif_doc)
+    await repos.notifications.insert(notif_doc)
 
     background_tasks.add_task(send_fcm_push, tokens, notif.title, notif.body, notif.data)
 
@@ -4386,22 +4102,16 @@ async def register_user_device_token(
 ):
     """Register/update FCM device token for push notifications."""
     user_type = current_user.get("_user_type", "user")
-    collection = db.partners if user_type == "partner" else db.users
-    await collection.update_one(
-        {"_id": current_user["_id"]},
-        {"$set": {"fcm_token": token, "fcm_updated_at": datetime.now(timezone.utc)}}
-    )
+    collection = repos.partners if user_type == "partner" else repos.users
+    await collection.update(current_user["_id"], {"fcm_token": token, "fcm_updated_at": datetime.now(timezone.utc)})
     return {"message": "Device token registered"}
 
 @api_router.post("/user/unregister-device")
 async def unregister_user_device_token(current_user: dict = Depends(get_current_user)):
     """Remove the FCM device token so the user stops receiving push notifications."""
     user_type = current_user.get("_user_type", "user")
-    collection = db.partners if user_type == "partner" else db.users
-    await collection.update_one(
-        {"_id": current_user["_id"]},
-        {"$unset": {"fcm_token": "", "fcm_updated_at": ""}}
-    )
+    collection = repos.partners if user_type == "partner" else repos.users
+    await collection.update(current_user["_id"], unset_fields={"fcm_token": "", "fcm_updated_at": ""})
     return {"message": "Device token removed"}
 
 @api_router.put("/user/profile")
@@ -4431,7 +4141,7 @@ async def update_user_profile(
     if data.email and data.email.lower() != (current_user.get("email") or "").lower():
         new_email = data.email.lower()
         # The new address must not already belong to another account.
-        existing = await db.users.find_one({"email": new_email, "_id": {"$ne": current_user["_id"]}})
+        existing = await repos.users.email_taken_by_other(new_email, current_user["_id"])
         if existing:
             raise HTTPException(status_code=400, detail="That email is already in use.")
         code = generate_verification_code()
@@ -4445,7 +4155,7 @@ async def update_user_profile(
     if not updates:
         raise HTTPException(status_code=400, detail="No changes provided.")
 
-    await db.users.update_one({"_id": current_user["_id"]}, {"$set": updates})
+    await repos.users.update(current_user["_id"], updates)
 
     if email_change_pending:
         body = (
@@ -4457,7 +4167,7 @@ async def update_user_profile(
         )
         background_tasks.add_task(send_email, pending_email, "Confirm your new Tefillah email", body)
 
-    fresh = await db.users.find_one({"_id": current_user["_id"]})
+    fresh = await repos.users.get(current_user["_id"])
     return {
         "message": "Profile updated." + (" Enter the code we emailed your new address to confirm the change." if email_change_pending else ""),
         "email_change_pending": email_change_pending,
@@ -4483,7 +4193,7 @@ class EmailChangeVerify(BaseModel):
 async def verify_email_change(data: EmailChangeVerify, current_user: dict = Depends(get_current_user)):
     """Confirm a staged email change with the code sent to the NEW address, then swap it in.
     Works for both users and partners (whichever account the token belongs to)."""
-    coll = db.partners if current_user.get("_user_type") == "partner" else db.users
+    coll = repos.partners if current_user.get("_user_type") == "partner" else repos.users
     pending = current_user.get("pending_email")
     if not pending:
         raise HTTPException(status_code=400, detail="There is no pending email change to confirm.")
@@ -4496,15 +4206,13 @@ async def verify_email_change(data: EmailChangeVerify, current_user: dict = Depe
         if exp < datetime.now(timezone.utc):
             raise HTTPException(status_code=400, detail="That code has expired. Save the new email again to get a fresh code.")
     # Re-check uniqueness at apply time (someone may have taken it meanwhile).
-    existing = await coll.find_one({"email": pending, "_id": {"$ne": current_user["_id"]}})
+    existing = await coll.email_taken_by_other(pending, current_user["_id"])
     if existing:
         raise HTTPException(status_code=400, detail="That email is now in use by another account.")
-    await coll.update_one(
-        {"_id": current_user["_id"]},
-        {
-            "$set": {"email": pending, "is_verified": True},
-            "$unset": {"pending_email": "", "pending_email_code": "", "pending_email_expires": ""},
-        },
+    await coll.update(
+        current_user["_id"],
+        set_fields={"email": pending, "is_verified": True},
+        unset_fields={"pending_email": "", "pending_email_code": "", "pending_email_expires": ""},
     )
     return {"message": "Your email has been updated.", "email": pending}
 
@@ -4513,11 +4221,8 @@ async def verify_email_change(data: EmailChangeVerify, current_user: dict = Depe
 async def cancel_email_change(current_user: dict = Depends(get_current_user)):
     """Discard a staged email change — clears the pending email and its code so the
     confirmation prompt goes away. Works for both users and partners."""
-    coll = db.partners if current_user.get("_user_type") == "partner" else db.users
-    await coll.update_one(
-        {"_id": current_user["_id"]},
-        {"$unset": {"pending_email": "", "pending_email_code": "", "pending_email_expires": ""}},
-    )
+    coll = repos.partners if current_user.get("_user_type") == "partner" else repos.users
+    await coll.update(current_user["_id"], unset_fields={"pending_email": "", "pending_email_code": "", "pending_email_expires": ""})
     return {"message": "Pending email change cancelled."}
 
 
@@ -4538,30 +4243,19 @@ async def delete_my_account(current_user: dict = Depends(get_current_user)):
         # Release any prayers still assigned to this partner back to the pending pool
         # (but not reported 'flagged' content — that stays out for moderation),
         # decrement their prayer-cell count, then delete the partner record.
-        await db.prayer_requests.update_many(
-            {"assigned_partner_id": uid, "status": {"$nin": ["prayed", "flagged"]}},
-            {"$set": {
-                "assigned_partner_id": None, "assigned_partner_name": None,
-                "assigned_cell_id": None, "assigned_cell_name": None,
-                "status": "pending", "assigned_at": None, "seen_by_partner": False,
-            }, "$unset": {"seen_at": ""}},
-        )
+        await repos.prayer_requests.release_partner(uid)
         if current_user.get("cell_id"):
-            await db.prayer_cells.update_one({"_id": current_user["cell_id"]}, {"$inc": {"agent_count": -1}})
-        await db.partners.delete_one({"_id": uid})
+            await repos.prayer_cells.adjust_agent_count(current_user["cell_id"], -1)
+        await repos.partners.delete(uid)
     else:
         # Strip the deleted user's PII from their prayer requests (the prayer text may
         # already be with a partner) and remove the user record.
-        await db.prayer_requests.update_many(
-            {"user_id": uid},
-            {"$set": {"user_id": None, "user_name": None, "user_email": None, "is_anonymous": True}},
-        )
-        await db.users.delete_one({"_id": uid})
+        await repos.prayer_requests.anonymize_user(uid)
+        await repos.users.delete(uid)
 
     # Common cleanup: avatar (Mongo + S3), notification targeting, audit log.
     await _delete_avatar(uid, current_user.get("profile_photo_url"))
-    await db.notifications.update_many({"target_ids": uid}, {"$pull": {"target_ids": uid}})
-    await db.notifications.delete_many({"target_type": "specific", "target_ids": []})
+    await repos.notifications.detach_recipient(uid)
     await log_activity("account_self_deleted", utype, uid, current_user.get("name", ""), utype, uid,
                        {"email": current_user.get("email")})
     await send_account_notice(
@@ -4580,20 +4274,16 @@ async def community_pulse(current_user: dict = Depends(get_current_user)):
     signed-in user's personal 'prayed over you' moments. All cheap count queries."""
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
-    answered_q = {"status": {"$in": ["prayed", "completed"]}}
     uid = current_user["_id"]
 
-    prayers_this_week = await db.prayer_requests.count_documents({"submitted_at": {"$gte": week_ago}})
-    prayers_total = await db.prayer_requests.count_documents({})
-    prayers_answered = await db.prayer_requests.count_documents(answered_q)
-    your_prayers_prayed = await db.prayer_requests.count_documents({"user_id": uid, **answered_q})
+    _answered = ["prayed", "completed"]
+    prayers_this_week = await repos.prayer_requests.count(submitted_since=week_ago)
+    prayers_total = await repos.prayer_requests.count()
+    prayers_answered = await repos.prayer_requests.count(status_in=_answered)
+    your_prayers_prayed = await repos.prayer_requests.count(user_id=uid, status_in=_answered)
 
     last_prayed_at = None
-    last = await db.prayer_requests.find_one(
-        {"user_id": uid, **answered_q, "prayed_at": {"$exists": True}},
-        sort=[("prayed_at", -1)],
-        projection={"prayed_at": 1},
-    )
+    last = await repos.prayer_requests.last_answered_for_user(uid)
     if last and last.get("prayed_at"):
         lp = last["prayed_at"]
         last_prayed_at = lp.isoformat() if isinstance(lp, datetime) else str(lp)
@@ -4613,7 +4303,7 @@ async def _delete_avatar(owner_id: str, profile_photo_url: str = None):
     legacy Mongo doc AND the S3 object the profile_photo_url points at. Never raises, so
     an S3 hiccup can't block the account deletion. Required for complete data deletion."""
     try:
-        await db.avatars.delete_one({"_id": owner_id})
+        await repos.avatars.delete(owner_id)
     except Exception as e:
         logger.warning(f"avatar mongo cleanup failed for {owner_id}: {e}")
     if profile_photo_url and "/avatars/" in profile_photo_url and _boto3 is not None:
@@ -4673,14 +4363,14 @@ async def _save_avatar(owner_id: str, file: UploadFile, previous_url: str = None
 async def upload_user_photo(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """Upload or replace the signed-in user's profile photo."""
     url = await _save_avatar(current_user["_id"], file, current_user.get("profile_photo_url"))
-    await db.users.update_one({"_id": current_user["_id"]}, {"$set": {"profile_photo_url": url}})
+    await repos.users.update(current_user["_id"], {"profile_photo_url": url})
     return {"profile_photo_url": url}
 
 
 @api_router.get("/avatar/{owner_id}")
 async def get_avatar(owner_id: str):
     """Public: stream a stored avatar. Users and partners share the store by id."""
-    doc = await db.avatars.find_one({"_id": owner_id})
+    doc = await repos.avatars.get(owner_id)
     if not doc or not doc.get("data"):
         raise HTTPException(status_code=404, detail="No avatar")
     data = doc["data"]
@@ -4707,21 +4397,13 @@ async def get_user_notifications(
 ):
     """Get notifications for the current user — includes targeted and broadcast notifications."""
     user_id = current_user["_id"]
-    query = {
-        "$or": [
-            {"target_type": "all"},
-            {"target_type": "users"},
-            {"target_ids": user_id},
-        ]
-    }
-    if unread_only:
-        query["read_by"] = {"$nin": [user_id]}
-
     skip = (page - 1) * limit
-    cursor = db.notifications.find(query).sort("created_at", -1).skip(skip).limit(limit)
+    rows = await repos.notifications.list_for(
+        user_id, "users", unread_only=unread_only, skip=skip, limit=limit
+    )
 
     notifications = []
-    async for notif in cursor:
+    for notif in rows:
         notifications.append({
             "id": notif["_id"],
             "title": notif.get("title", ""),
@@ -4732,8 +4414,8 @@ async def get_user_notifications(
             "created_at": notif["created_at"].isoformat() if isinstance(notif.get("created_at"), datetime) else str(notif.get("created_at", "")),
         })
 
-    total = await db.notifications.count_documents(query)
-    unread_count = await db.notifications.count_documents({**query, "read_by": {"$nin": [user_id]}})
+    total = await repos.notifications.count_for(user_id, "users", unread_only=unread_only)
+    unread_count = await repos.notifications.count_for(user_id, "users", unread_only=True)
 
     return {"notifications": notifications, "total": total, "unread_count": unread_count}
 
@@ -4745,11 +4427,8 @@ async def mark_user_notification_read(
     """Mark a notification as read for the current user."""
     user_id = current_user["_id"]
     # Scope the write to notifications actually visible to this user (no blind writes by id).
-    result = await db.notifications.update_one(
-        {"_id": notification_id, "$or": [{"target_type": "all"}, {"target_type": "users"}, {"target_ids": user_id}]},
-        {"$addToSet": {"read_by": user_id}}
-    )
-    if result.matched_count == 0:
+    matched = await repos.notifications.mark_read(notification_id, user_id, "users")
+    if matched == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"message": "Notification marked as read"}
 
@@ -4759,10 +4438,7 @@ async def mark_all_user_notifications_read(
 ):
     """Mark all notifications as read for the current user."""
     user_id = current_user["_id"]
-    await db.notifications.update_many(
-        {"$or": [{"target_type": "all"}, {"target_type": "users"}, {"target_ids": user_id}], "read_by": {"$nin": [user_id]}},
-        {"$addToSet": {"read_by": user_id}}
-    )
+    await repos.notifications.mark_all_read(user_id, "users")
     return {"message": "All notifications marked as read"}
 
 # ==================== EMAIL BROADCAST ====================
@@ -4786,19 +4462,19 @@ async def send_email_broadcast(email_req: EmailBroadcast, background_tasks: Back
             recipients.append({"email": email, "name": doc.get("name", "")})
 
     if email_req.target == "all":
-        async for user in db.users.find({}, {"email": 1, "name": 1}):
+        for user in await repos.users.all_email_name():
             _add_recipient(user)
-        async for partner in db.partners.find({}, {"email": 1, "name": 1}):
+        for partner in await repos.partners.all_email_name():
             _add_recipient(partner)
     elif email_req.target == "users":
-        async for user in db.users.find({}, {"email": 1, "name": 1}):
+        for user in await repos.users.all_email_name():
             _add_recipient(user)
     elif email_req.target == "partners":
-        async for partner in db.partners.find({}, {"email": 1, "name": 1}):
+        for partner in await repos.partners.all_email_name():
             _add_recipient(partner)
     elif email_req.target == "specific" and email_req.target_ids:
-        for collection in [db.users, db.partners]:
-            async for doc in collection.find({"_id": {"$in": email_req.target_ids}}, {"email": 1, "name": 1}):
+        for repo in (repos.users, repos.partners):
+            for doc in await repo.email_name_for_ids(email_req.target_ids):
                 _add_recipient(doc)
     else:
         raise HTTPException(status_code=400, detail="Invalid target. Use: all, users, partners, specific")
@@ -4856,9 +4532,8 @@ async def send_email_broadcast(email_req: EmailBroadcast, background_tasks: Back
 
 @api_router.get("/cells", response_model=List[PrayerCellResponse])
 async def get_prayer_cells():
-    cursor = db.prayer_cells.find({"is_active": True})
     cells = []
-    async for cell in cursor:
+    for cell in await repos.prayer_cells.list_active():
         cells.append(PrayerCellResponse(
             id=cell["_id"],
             name=cell["name"],
@@ -4887,7 +4562,7 @@ async def create_prayer_cell(cell_data: PrayerCellCreate, admin: dict = Depends(
         "is_active": True,
         "created_at": datetime.now(timezone.utc),
     }
-    await db.prayer_cells.insert_one(cell_doc)
+    await repos.prayer_cells.insert(cell_doc)
     
     cell_doc.pop("_id", None)
     return PrayerCellResponse(id=cell_id, **cell_doc)
@@ -5007,7 +4682,7 @@ Respond ONLY in this exact JSON format (no markdown, no code fences, no extra te
         "assigned_at": None,
     }
 
-    await db.prayer_requests.insert_one(prayer_doc)
+    await repos.prayer_requests.insert(prayer_doc)
 
     await log_activity("prayer_submitted", "user", user_id, current_user["name"], "prayer", prayer_id)
 
@@ -5153,7 +4828,7 @@ Respond ONLY in this exact JSON format (no markdown, no code fences, no extra te
         "submitted_at": datetime.now(timezone.utc),
     }
     
-    await db.prayer_requests.insert_one(prayer_doc)
+    await repos.prayer_requests.insert(prayer_doc)
     
     return ComfortResponse(
         message="Prayer submitted successfully",
@@ -5171,11 +4846,12 @@ async def get_prayer_history(
     current_user: dict = Depends(get_current_user)
 ):
     skip = (page - 1) * limit
-    cursor = db.prayer_requests.find({"user_id": current_user["_id"]})
-    cursor = cursor.sort("submitted_at", -1).skip(skip).limit(limit)
-    
+    rows = await repos.prayer_requests.list_for_user(
+        current_user["_id"], skip=skip, limit=limit
+    )
+
     prayers = []
-    async for prayer in cursor:
+    for prayer in rows:
         try:
             prayers.append(PrayerRequestResponse(
                 id=prayer["_id"],
@@ -5217,9 +4893,9 @@ async def seed_database(admin: dict = Depends(get_current_super_admin)):
     ]
     
     for cell in cells:
-        existing = await db.prayer_cells.find_one({"name": cell["name"]})
+        existing = await repos.prayer_cells.get_by_name(cell["name"])
         if not existing:
-            await db.prayer_cells.insert_one({
+            await repos.prayer_cells.insert({
                 "_id": str(uuid.uuid4()),
                 **cell,
                 "agent_count": 0,
@@ -5256,28 +4932,16 @@ async def _purge_limit_stores():
 async def startup_db_client():
     # --- Indexes: every hot query path must be covered so the DB scales with traffic.
     # Idempotent; safe to run on every boot (and in every uvicorn worker).
-    await db.users.create_index("email", unique=True)
-    await db.partners.create_index("email", unique=True)
-    await db.admins.create_index("email", unique=True)
+    await repos.users.ensure_indexes()
+    await repos.partners.ensure_indexes()
+    await repos.admins.ensure_indexes()
     # prayer_requests — largest, hottest collection (lists always sort by submitted_at desc)
-    await db.prayer_requests.create_index([("assigned_partner_id", 1), ("status", 1), ("submitted_at", -1)])
-    await db.prayer_requests.create_index([("status", 1), ("submitted_at", -1)])
-    await db.prayer_requests.create_index([("user_id", 1), ("submitted_at", -1)])
-    await db.prayer_requests.create_index("submitted_at")
-    await db.prayer_requests.create_index("prayed_at", sparse=True)
-    await db.prayer_requests.create_index("updated_at", sparse=True)
+    await repos.prayer_requests.ensure_indexes()
     # analytics / dashboard date filters
-    await db.users.create_index("created_at")
-    await db.users.create_index("last_login", sparse=True)
-    await db.users.create_index("fcm_token", sparse=True)
-    await db.partners.create_index("created_at")
-    await db.partners.create_index("last_active", sparse=True)
-    await db.partners.create_index("fcm_token", sparse=True)
     # logs & notifications
-    await db.activity_logs.create_index("timestamp")
-    await db.llm_logs.create_index("timestamp")
-    await db.notifications.create_index("created_at")
-    await db.notifications.create_index("target_ids")
+    await repos.activity_logs.ensure_indexes()
+    await repos.llm_logs.ensure_indexes()
+    await repos.notifications.ensure_indexes()
     logger.info("Database indexes ensured")
     # (The old single-field prayer_requests indexes on user_id/assigned_partner_id/status
     #  are now subsumed by the compound prefixes above and may be dropped in Atlas.)

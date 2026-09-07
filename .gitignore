@@ -88,3 +88,10 @@ ehthumbs.db
 !.vscode/extensions.json
 *.swp
 *.swo
+
+# --- DynamoDB migration (added 2026-09-06) ---
+# Local test venv (existing rule only covered "venv/", not ".venv/")
+.venv/
+**/.venv/
+# Golden snapshots contain REAL user emails/names copied from prod - never commit
+backend/migration/golden_*.json
