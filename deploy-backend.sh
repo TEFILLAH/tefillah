@@ -17,7 +17,7 @@ APP="tefillah-api"
 ENV="tefillah-api-prod-v2"
 ZIP="tefillah-api-v4.zip"
 STAGE="_eb_build"
-LABEL="v33-security-hardening-$(date +%Y%m%d-%H%M%S)"
+LABEL="v34-dynamodb-repo-layer-$(date +%Y%m%d-%H%M%S)"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${REPO_ROOT}"
@@ -28,6 +28,15 @@ cd "${REPO_ROOT}"
 # the live source so the bundle can never carry a stale server.py.
 echo "==> Staging backend/server.py -> ${STAGE}/server.py"
 cp "backend/server.py" "${STAGE}/server.py"
+
+# server.py now does `from repo import make_repos` AT IMPORT TIME, so the repo/
+# package must ship with it. Without this the app dies on startup with
+# ImportError and the environment goes red -- there is no partial-failure mode.
+echo "==> Staging backend/repo/ -> ${STAGE}/repo/"
+rm -rf "${STAGE}/repo"
+mkdir -p "${STAGE}/repo"
+cp backend/repo/*.py "${STAGE}/repo/"
+ls -1 "${STAGE}/repo/"
 
 SRC_MD5="$(python -c "import hashlib;print(hashlib.md5(open('backend/server.py','rb').read()).hexdigest())")"
 echo "    source backend/server.py md5=${SRC_MD5}"
@@ -42,6 +51,11 @@ import os, sys, zipfile
 stage, out = sys.argv[1], sys.argv[2]
 members = [
     "server.py",
+    # The repository layer. server.py imports this at module scope, so omitting
+    # it ships an app that cannot start.
+    "repo/__init__.py",
+    "repo/mongo.py",
+    "repo/dynamo.py",
     "Procfile",
     "requirements.txt",
     "firebase-credentials.json",
@@ -65,6 +79,33 @@ if [ "${ZIP_MD5}" != "${SRC_MD5}" ]; then
   echo "FATAL: ${ZIP} server.py md5 ${ZIP_MD5} != source ${SRC_MD5} — refusing to deploy a stale bundle."; exit 1
 fi
 echo "    ${ZIP} verified: server.py md5=${ZIP_MD5} (matches source, Twilio-free)"
+
+# --- Hard gate: the repo/ package must be present AND match source -----------
+# Same reasoning as the server.py gate above. A bundle missing repo/ starts,
+# fails on `from repo import make_repos`, and takes the environment down.
+python - "${ZIP}" <<'PYEOF'
+import hashlib, sys, zipfile
+from pathlib import Path
+zf = zipfile.ZipFile(sys.argv[1])
+packaged = set(zf.namelist())
+bad = []
+for src in sorted(Path("backend/repo").glob("*.py")):
+    member = f"repo/{src.name}"
+    if member not in packaged:
+        bad.append(f"{member} MISSING from bundle")
+        continue
+    a = hashlib.md5(src.read_bytes()).hexdigest()
+    b = hashlib.md5(zf.read(member)).hexdigest()
+    if a != b:
+        bad.append(f"{member} md5 {b} != source {a}")
+    else:
+        print(f"    {member} verified md5={a}")
+if bad:
+    print("FATAL: repo/ package gate failed:")
+    for line in bad:
+        print("   ", line)
+    sys.exit(1)
+PYEOF
 
 # The EB application-versions S3 bucket for this account/region.
 EB_BUCKET="elasticbeanstalk-${REGION}-$(aws sts get-caller-identity --query Account --output text)"
