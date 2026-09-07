@@ -1,5 +1,5 @@
 interface LogoProps {
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   /** Show the "Tefillah" wordmark below the badge. */
   showWordmark?: boolean;
   /** Show the tagline rule under the wordmark. */
@@ -35,6 +35,7 @@ interface SizeSpec {
 }
 
 const SIZES: Record<NonNullable<LogoProps['size']>, SizeSpec> = {
+  xs: { outer: 44,  inner: 32,  flame: 22, wordmark: 'text-sm',              tagline: 'text-[9px]' },
   sm: { outer: 60,  inner: 44,  flame: 28, wordmark: 'text-base sm:text-lg', tagline: 'text-[10px]' },
   md: { outer: 96,  inner: 70,  flame: 48, wordmark: 'text-2xl sm:text-3xl', tagline: 'text-xs' },
   lg: { outer: 144, inner: 104, flame: 72, wordmark: 'text-4xl sm:text-5xl', tagline: 'text-xs sm:text-sm' },

@@ -72,8 +72,8 @@ export default function Header({ variant = 'public', hideNav = false }: HeaderPr
     >
       <div className="mx-auto max-w-6xl flex items-center justify-between gap-4 px-4 sm:px-6 lg:px-8 h-16">
         <Link to={token ? (userType === 'partner' ? '/partner/dashboard' : '/home') : '/'} className="flex items-center gap-3">
-          <Logo size="sm" />
-          <span className="font-serif text-xl tracking-[0.18em] hidden sm:inline">Tefillah</span>
+          <Logo size="xs" />
+          <span className="font-serif text-2xl tracking-[0.18em] hidden sm:inline leading-none">Tefillah</span>
         </Link>
 
         {!hideNav && (

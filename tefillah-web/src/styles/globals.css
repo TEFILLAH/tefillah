@@ -37,10 +37,13 @@
   --shadow-md: 0 6px 24px rgba(20, 18, 30, 0.08);
   --shadow-glow: 0 0 30px rgba(184, 137, 43, 0.18);
 
-  --logo-disc-outer: #d4af37;
-  --logo-disc-inner: #1a1a2e;
+  /* Olive/bronze medallion — hard-matched to the mobile app's BreathingLogo
+     (frontend/src/components/Logo.tsx). Identical in light + dark so the brand
+     identity matches the launcher icon exactly. */
+  --logo-disc-outer: #3a2f15;
+  --logo-disc-inner: #5d4a1a;
   --logo-flame: #d4af37;
-  --logo-flame-droplet: #f0d97a;
+  --logo-flame-droplet: #1a1408;
 }
 
 /* ---- Dark theme ---- */
@@ -62,10 +65,11 @@
   --shadow-md: 0 8px 30px rgba(0, 0, 0, 0.4);
   --shadow-glow: 0 0 34px rgba(212, 175, 55, 0.22);
 
-  --logo-disc-outer: #d4af37;
-  --logo-disc-inner: #0f0f1a;
+  /* Same olive/bronze medallion as light — app identity is theme-independent. */
+  --logo-disc-outer: #3a2f15;
+  --logo-disc-inner: #5d4a1a;
   --logo-flame: #d4af37;
-  --logo-flame-droplet: #f0d97a;
+  --logo-flame-droplet: #1a1408;
 }
 
 html {
@@ -182,21 +186,26 @@ body {
 }
 
 /* ---- Breathing logo (glow / icon / ring layers) ---- */
-.anim-glow-breathe { animation: tf-glow-breathe 4s ease-in-out infinite; }
+.anim-glow-breathe { animation: tf-glow-breathe 4s ease-in-out infinite; transform-origin: center; }
 .anim-icon-breathe { animation: tf-icon-breathe 4s ease-in-out infinite; transform-origin: center; }
-.anim-ring-breathe { animation: tf-ring-breathe 4s ease-in-out infinite; transform-origin: center; }
+.anim-ring-breathe { animation: tf-ring-breathe 5s ease-in-out infinite; transform-origin: center; }
 
-@keyframes tf-glow-breathe {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 0.7; }
+/* Discs stay OPAQUE (scale-breath only, no opacity pulse) so the olive/bronze
+   renders true on ANY background — the app is dark-only so its opacity pulse
+   never washed out, but on the web's cream light theme a semi-transparent disc
+   let the page bleed through and turned the olive into a pale tan. Opaque keeps
+   the same greenish medallion in light + dark. Flame keeps its gentle scale. */
+@keyframes tf-glow-breathe {   /* inner disc */
+  0%, 100% { transform: scale(0.97); }
+  50%      { transform: scale(1.02); }
 }
-@keyframes tf-icon-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.04); }
+@keyframes tf-icon-breathe {   /* flame */
+  0%, 100% { transform: scale(0.97); }
+  50%      { transform: scale(1.03); }
 }
-@keyframes tf-ring-breathe {
-  0%, 100% { transform: scale(1); opacity: 0.6; }
-  50% { transform: scale(1.06); opacity: 1; }
+@keyframes tf-ring-breathe {   /* outer disc */
+  0%, 100% { transform: scale(0.95); }
+  50%      { transform: scale(1.05); }
 }
 
 @media (prefers-reduced-motion: reduce) {
