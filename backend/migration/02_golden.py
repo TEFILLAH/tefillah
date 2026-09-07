@@ -35,6 +35,17 @@ PROD_DB_NAMES = {"tefilah", "tefillah"}
 # AND writes an llm_logs row, which mutates what /api/admin/llm-logs returns.
 SKIP_PATHS = {"/api/verse/generate"}
 
+# Endpoints whose RESPONSE IS A FUNCTION OF THE CURRENT DATE. /api/admin/
+# daily-reports builds a rolling window (start_date = now - timedelta(days=N)),
+# so every entry shifts position when the UTC date rolls over -- 56 phantom
+# "differences" that are not code changes at all.
+#
+# The auto-volatility detector cannot catch this: it captures twice seconds
+# apart, and a daily window is stable across that gap but not across midnight.
+# Excluded rather than masked field-by-field, and the comparison PRINTS that it
+# skipped them, so this can never quietly hide a real regression.
+DATE_WINDOWED_PATHS = ("/api/admin/daily-reports",)
+
 # Must be set BEFORE importing server (it reads env at import time).
 os.environ["DB_NAME"] = TEST_DB
 os.environ.pop("PRODUCTION", None)          # any non-empty value trips a fatal guard
@@ -231,12 +242,20 @@ def main():
         new.update({f"{k}|{p}": val for p, val in flatten(v).items()})
 
     diffs = []
+    skipped_windowed = 0
     for k in sorted(set(old) | set(new)):
         if k in volatile:
+            continue
+        if any(p in k for p in DATE_WINDOWED_PATHS):
+            skipped_windowed += 1
             continue
         if old.get(k, "<missing>") != new.get(k, "<missing>"):
             diffs.append((k, old.get(k, "<missing>"), new.get(k, "<missing>")))
 
+    if skipped_windowed:
+        print(f"note: skipped {skipped_windowed} field(s) on date-windowed "
+              f"endpoint(s) {DATE_WINDOWED_PATHS} -- their content shifts when "
+              f"the UTC date rolls over, independently of any code change.")
     if not diffs:
         print(f"IDENTICAL — {len(now)} responses match the baseline. Refactor is behaviour-preserving.")
         return 0

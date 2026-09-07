@@ -135,3 +135,45 @@ moment, and the longer you stay on DynamoDB the more a rollback costs.
 `ValidationException` (`status` is a GSI key). **No current caller does this** —
 latent, not live. One-line fix: route it through `_split_nulls`, as the three
 newer repos already do.
+
+---
+
+# POST-CUTOVER (completed 2026-09-07)
+
+Production runs `v34-dynamodb-repo-layer` with `DB_BACKEND=dynamo`, enhanced
+health Ok/Green. Verified after the flip:
+
+- all 21 authenticated GET endpoints (user / partner / admin) return **200**
+  against live production — `migration/09_prod_smoke.py`
+- response CONTENT matches Mongo exactly: 76 users / 43 partners / 31 prayers,
+  with all rows actually returned (a 200 with empty data would have passed a
+  status-only check)
+- nginx logs: 168x 200, 32x 404, **zero 5xx**. The 404s are `GET /` plus
+  internet vulnerability scanners (`/solr/admin`, `/v2/_catalog`, `/sdk`)
+- `05_parity.py --source-db tefilah` exits 0 against the live data
+
+## Running the gates AFTER cutover
+
+`verify_all.py --phase 2` compares `tefilah_test` against DynamoDB, but
+DynamoDB now holds PRODUCTION data, so those two gates will report false
+mismatches. Post-cutover, run parity against the real source instead:
+
+```bash
+python migration/05_parity.py --sample 1000 --source-db tefilah --i-know-this-is-production
+```
+
+`--phase 1` (compile / undefined names / no-direct-db / golden-mongo) stays
+valid and should remain green.
+
+## Known, accepted, zero-impact
+
+`/api/avatar/{id}` returns 404 under DynamoDB: the S3-backed AvatarRepo needs
+`s3:ListBucket` + `s3:GetObject`, which the EB instance role does not grant
+(its inline policy is TefillahAvatarWrite). Verified zero impact — no client
+code calls the endpoint and no account's `profile_photo_url` points at it.
+
+Separately, and NOT caused by this migration: 2 of the 3 `profile_photo_url`
+values reference S3 objects that never existed (CloudFront serves the SPA
+fallback as `text/html`), and those blobs were not in the `avatars` collection
+either. Those images are simply gone; only the one legacy blob was recoverable
+and it was migrated.

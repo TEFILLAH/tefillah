@@ -552,6 +552,15 @@ class AvatarRepo:
 
     Keys are written by server.py's _save_avatar as `avatars/{owner_id}-{ts}.{ext}`,
     so the timestamp is unknown here: list the owner's prefix and take the newest.
+
+    REQUIRES s3:ListBucket AND s3:GetObject on the bucket for the EB instance
+    role. **Production does NOT currently grant these** (the role's inline
+    policy is TefillahAvatarWrite), so /api/avatar/{id} returns 404 there.
+    Verified zero impact before accepting that: no client code calls the
+    endpoint, and no account's profile_photo_url points at it -- avatars are
+    served straight from CloudFront via profile_photo_url. Grant the two S3
+    actions if the legacy endpoint is ever needed again; the code below then
+    works unchanged.
     """
 
     _CONTENT_TYPE = {"jpg": "image/jpeg", "png": "image/png",
