@@ -1984,6 +1984,11 @@ class SocialAuthRequest(BaseModel):
     # of a private-relay address). Untrusted display text: length-capped, and
     # used ONLY when the verified token carries no name of its own.
     full_name: Optional[str] = Field(None, max_length=100)
+    # Apple's one-time authorizationCode, forwarded verbatim by the client. It is
+    # exchanged for a refresh token so the account can be REVOKED at deletion
+    # (App Store 5.1.1(v)) — Apple never gives us another chance to get one.
+    # Opaque credential material: never logged, never sanitized/echoed.
+    apple_authorization_code: Optional[str] = Field(None, max_length=512)
 
     @field_validator('full_name')
     @classmethod
@@ -2117,6 +2122,153 @@ async def verify_apple_token(token: str) -> Optional[dict]:
     }
 
 
+# ---------------------- Apple token revocation ----------------------
+# App Store guideline 5.1.1(v): an app offering Sign in with Apple MUST revoke
+# the user's Apple token when they delete their account. Revoking needs the
+# Sign in with Apple KEY (.p8), which is a real secret and comes from the
+# environment only — never a default, never logged.
+#
+# Unlike verify_apple_token (which fails CLOSED because it guards access), every
+# path below fails SOFT: revocation guards nothing, so an unconfigured or
+# unreachable Apple must never block a sign-in or, especially, a deletion.
+APPLE_TEAM_ID = os.environ.get("APPLE_TEAM_ID", "")
+APPLE_KEY_ID = os.environ.get("APPLE_KEY_ID", "")
+# EB/most env stores cannot hold real newlines, so the .p8 is normally pasted
+# with literal \n escapes. Accept both forms rather than fail on the common one.
+APPLE_PRIVATE_KEY = os.environ.get("APPLE_PRIVATE_KEY", "").replace("\\n", "\n")
+
+APPLE_TOKEN_URL = "https://appleid.apple.com/auth/token"
+APPLE_REVOKE_URL = "https://appleid.apple.com/auth/revoke"
+
+
+def _apple_client_secret(client_id: str) -> Optional[str]:
+    """The ES256 JWT Apple accepts in place of a client_secret; None if unconfigured.
+
+    Signed with the .p8 key, `kid` = the Key ID, `iss` = the Team ID and `sub` =
+    the client_id (bundle id for native, Service ID for web). Apple allows up to
+    six months; five minutes is plenty for a single request and keeps the blast
+    radius of a leaked secret near zero.
+    """
+    if not (APPLE_TEAM_ID and APPLE_KEY_ID and APPLE_PRIVATE_KEY and client_id):
+        return None
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {"iss": APPLE_TEAM_ID, "iat": now, "exp": now + timedelta(minutes=5),
+         "aud": APPLE_ISSUER, "sub": client_id},
+        APPLE_PRIVATE_KEY,
+        algorithm="ES256",
+        headers={"kid": APPLE_KEY_ID},
+    )
+
+
+def _apple_client_id(token: str) -> Optional[str]:
+    """Which client_id an already-verified Apple identity token was minted for.
+
+    The `aud` claim IS the client_id, and the exchange/revoke calls must use the
+    SAME one. Read unverified — safe only because verify_apple_token has already
+    checked this exact token's signature and pinned `aud` to our own ids — and
+    re-pinned here so a stray call site cannot widen it.
+    """
+    try:
+        aud = jwt.decode(token, options={"verify_signature": False}).get("aud")
+    except Exception:
+        return None
+    if isinstance(aud, list):
+        aud = aud[0] if aud else None
+    return aud if aud in (APPLE_BUNDLE_ID, APPLE_SERVICE_ID) and aud else None
+
+
+async def exchange_apple_code(code: str, client_id: str) -> Optional[str]:
+    """Trade Apple's one-time authorizationCode for a refresh token.
+
+    That refresh token is the ONLY thing /auth/revoke accepts later, and the code
+    is single-use, so this has to happen at sign-in — there is no way to obtain it
+    at deletion time. Returns None if we cannot; the caller carries on regardless.
+
+    Nothing here logs `code` or the client secret.
+    """
+    secret = _apple_client_secret(client_id)
+    if not (secret and code):
+        return None
+    async with httpx.AsyncClient(timeout=10.0) as http_client:
+        resp = await http_client.post(APPLE_TOKEN_URL, data={
+            "client_id": client_id,
+            "client_secret": secret,
+            "code": code,
+            "grant_type": "authorization_code",
+        })
+        # raise_for_status' message carries the URL and status only — never the
+        # request body — which is what keeps the authorization code out of logs.
+        resp.raise_for_status()
+        return resp.json().get("refresh_token")
+
+
+async def revoke_apple_token(refresh_token: str, client_id: str) -> bool:
+    """POST /auth/revoke. Apple answers 200 with an empty body on success."""
+    secret = _apple_client_secret(client_id)
+    if not (secret and refresh_token):
+        return False
+    async with httpx.AsyncClient(timeout=10.0) as http_client:
+        resp = await http_client.post(APPLE_REVOKE_URL, data={
+            "client_id": client_id,
+            "client_secret": secret,
+            "token": refresh_token,
+            "token_type_hint": "refresh_token",
+        })
+        resp.raise_for_status()
+        return True
+
+
+async def _apple_link_fields(code: Optional[str], id_token: str, provider: str) -> dict:
+    """Fields to persist on a social account so its Apple token can be revoked later.
+
+    Empty dict whenever anything is missing — not an Apple login, no code from the
+    client, key material unset, or Apple refused. Sign-in must never fail because
+    of this.
+    """
+    if not code or provider != "apple.com":
+        return {}
+    client_id = _apple_client_id(id_token)
+    if not client_id:
+        return {}
+    try:
+        refresh_token = await exchange_apple_code(code, client_id)
+    except Exception as e:
+        logger.warning(f"Apple code exchange failed ({type(e).__name__}: {e}) — "
+                       "account will not be revocable at deletion")
+        return {}
+    if not refresh_token:
+        logger.warning("Apple code exchange returned no refresh token "
+                       "(APPLE_TEAM_ID/APPLE_KEY_ID/APPLE_PRIVATE_KEY set?) — "
+                       "account will not be revocable at deletion")
+        return {}
+    return {"apple_refresh_token": refresh_token, "apple_client_id": client_id}
+
+
+async def _revoke_apple_for_account(account: Optional[dict]) -> None:
+    """Best-effort Apple revocation for an account about to be deleted.
+
+    NEVER raises and never blocks: the user's right to delete their account
+    outranks this call, so Apple being down, the key being unset, or the token
+    already being revoked all just log and continue.
+    """
+    refresh_token = (account or {}).get("apple_refresh_token")
+    if not refresh_token:
+        return
+    client_id = account.get("apple_client_id") or APPLE_BUNDLE_ID
+    try:
+        if await revoke_apple_token(refresh_token, client_id):
+            logger.info(f"Revoked Apple token for account {account.get('_id')}")
+        else:
+            logger.warning(
+                "Apple revocation SKIPPED — APPLE_TEAM_ID/APPLE_KEY_ID/APPLE_PRIVATE_KEY "
+                "not configured. Deleting the account anyway (App Store 5.1.1(v) "
+                "requires the revoke; set the key material).")
+    except Exception as e:
+        logger.warning(f"Apple revocation failed ({type(e).__name__}: {e}) — "
+                       "deleting the account anyway")
+
+
 async def verify_firebase_token(token: str) -> Optional[dict]:
     """Verify Firebase ID token using Google's public token verification endpoint.
     Falls back to manual JWT decode if the online verification is unavailable."""
@@ -2212,12 +2364,54 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
     if not firebase_user:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
-    email = firebase_user["email"].lower()
+    email = (firebase_user.get("email") or "").strip().lower()
+
+    # ---- ACCOUNT TAKEOVER GUARD -------------------------------------------
+    # Everything below joins the caller to an existing account on email ALONE.
+    # So the email must be one the PROVIDER has confirmed the caller owns —
+    # otherwise anyone who can mint a token bearing a victim's address walks
+    # straight into their account, including accounts created with
+    # email+password that have no social identity at all.
+    #
+    # This was reachable: Firebase Email/Password is enabled on the project and
+    # the web API key is public (tefillah-web/src/lib/firebase.ts), so
+    # accounts:signUp would issue an ID token for ANY address with
+    # emailVerified=false. All three validators already compute email_verified;
+    # nothing read it until now.
+    #
+    # Legitimate callers are unaffected: Google sets it true, and Apple sets it
+    # true even for @privaterelay.appleid.com forwarding addresses.
+    # Compared against an ALLOW-LIST of truthy forms, never with a bare `not`.
+    # All three validators normalise this to a bool today, but the string
+    # "false" is TRUTHY in Python — a plain falsiness check would wave through
+    # exactly the token it is meant to stop the moment any validator returns
+    # the raw claim. Anything unrecognised is treated as unverified.
+    _verified = firebase_user.get("email_verified")
+    if _verified is not True and str(_verified).strip().lower() != "true":
+        logger.warning(
+            "Social auth REFUSED: provider %s did not verify the email address",
+            firebase_user.get("provider", "unknown"),
+        )
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+    # An empty email would make every emailless caller collapse into ONE shared
+    # account: get_by_email("") misses once, creates a row, and every later
+    # emailless sign-in matches it. Apple already refuses these; the Firebase
+    # and Google paths both default a missing address to "".
+    if not email:
+        logger.warning("Social auth REFUSED: token carried no email address")
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
     # Provider-verified name wins; then the client-supplied one (Apple's
     # first-authorization name); then the email prefix as a last resort.
     name = (firebase_user.get("name")
             or (auth_data.full_name or "").strip()
             or email.split("@")[0])
+
+    # Apple revocation material, if this was an Apple login and the client sent
+    # the code. Always {} when unavailable — never fails the sign-in.
+    apple_fields = await _apple_link_fields(
+        auth_data.apple_authorization_code, auth_data.firebase_token,
+        firebase_user.get("provider", ""))
 
     if auth_data.is_agent:
         # Check if partner already exists
@@ -2228,7 +2422,7 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
                 raise HTTPException(status_code=403, detail="Account is suspended or pending approval")
             # Login existing partner
             token = create_token(existing_partner["_id"], email, "partner")
-            await repos.partners.update(existing_partner["_id"], {"last_active": datetime.now(timezone.utc)})
+            await repos.partners.update(existing_partner["_id"], {"last_active": datetime.now(timezone.utc), **apple_fields})
             return TokenResponse(
                 access_token=token,
                 user=UserResponse(
@@ -2273,6 +2467,7 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
             "active_assignments": 0,
             "created_at": datetime.now(timezone.utc),
             "last_active": datetime.now(timezone.utc),
+            **apple_fields,
         }
         await repos.partners.insert(partner_doc)
 
@@ -2303,7 +2498,7 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
                 raise HTTPException(status_code=403, detail="Account suspended by administrator")
             # Login existing user
             token = create_token(existing_user["_id"], email, "user")
-            await repos.users.update(existing_user["_id"], {"last_login": datetime.now(timezone.utc)})
+            await repos.users.update(existing_user["_id"], {"last_login": datetime.now(timezone.utc), **apple_fields})
             return TokenResponse(
                 access_token=token,
                 user=UserResponse(
@@ -2339,6 +2534,7 @@ async def social_auth(auth_data: SocialAuthRequest, request: Request, background
             "verification_expires": datetime.now(timezone.utc) + timedelta(hours=24),
             "created_at": datetime.now(timezone.utc),
             "last_login": datetime.now(timezone.utc),
+            **apple_fields,
         }
         await repos.users.insert(user_doc)
 
@@ -3431,6 +3627,10 @@ async def _cascade_delete_user(user_id: str, profile_photo_url: Optional[str] = 
     """Delete a user AND its side effects so single- and bulk-delete never drift:
     remove the avatar, scrub the user's PII from their prayer requests (partners keep the
     content, anonymized), and detach them from notifications. Returns the deleted count."""
+    # Apple requires the token be revoked when the account goes (5.1.1(v)). Re-read
+    # the row rather than widen the signature, so every caller gets this for free.
+    # Best-effort by design: it can never stop the delete below.
+    await _revoke_apple_for_account(await repos.users.get(user_id))
     deleted = await repos.users.delete(user_id)
     if deleted == 0:
         return 0
@@ -3445,6 +3645,7 @@ async def _cascade_delete_partner(partner: dict) -> int:
     pending pool, decrement their cell's agent_count, and remove the avatar. Shared by single-
     and bulk-delete; pass the already-fetched partner doc. Returns the deleted count."""
     partner_id = partner["_id"]
+    await _revoke_apple_for_account(partner)          # App Store 5.1.1(v); best-effort
     await _release_partner_prayers(partner_id)
     if partner.get("cell_id"):
         await repos.prayer_cells.adjust_agent_count(partner["cell_id"], -1)
@@ -4453,6 +4654,11 @@ async def delete_my_account(current_user: dict = Depends(get_current_user)):
     utype = current_user.get("_user_type", "user")
     if utype == "admin":
         raise HTTPException(status_code=400, detail="Admin accounts cannot be self-deleted here.")
+
+    # Sign in with Apple accounts must have their Apple token revoked on deletion
+    # (App Store 5.1.1(v)). Best-effort: this can never raise, and a failed or
+    # unconfigured revocation must not stop the user deleting their account.
+    await _revoke_apple_for_account(current_user)
 
     if utype == "partner":
         # Release any prayers still assigned to this partner back to the pending pool

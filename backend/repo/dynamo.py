@@ -61,7 +61,9 @@ except ImportError:                     # invoked from outside backend/
 LOG_RETENTION_DAYS = 365
 
 # Never exposed through admin lists/exports (same set as mongo.py's _USER_SECRETS).
-_USER_SECRETS = ("password_hash", "verification_code")
+# apple_refresh_token is a live Apple credential kept only so account deletion can
+# revoke it — it must not ride along in an admin list or a CSV export.
+_USER_SECRETS = ("password_hash", "verification_code", "apple_refresh_token")
 
 # Full-string ISO-8601 datetime, i.e. exactly what _enc() writes. Strict on
 # purpose: a free-text field that merely contains a date must not be parsed.

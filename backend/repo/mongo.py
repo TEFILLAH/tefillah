@@ -38,7 +38,9 @@ class _DailyCounts:
 
 
 # Fields never exposed through admin lists/exports.
-_USER_SECRETS = {"password_hash": 0, "verification_code": 0}
+# apple_refresh_token is a live Apple credential kept only so account deletion can
+# revoke it — it must not ride along in an admin list or a CSV export.
+_USER_SECRETS = {"password_hash": 0, "verification_code": 0, "apple_refresh_token": 0}
 
 
 class _AccountRepo(_DailyCounts):
