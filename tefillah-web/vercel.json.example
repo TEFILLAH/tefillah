@@ -1,0 +1,31 @@
+{
+  "_comment": "NOT IN USE. tefillah.in is served from S3 + CloudFront and the live security headers are set on the CloudFront distribution (E20DJ1IDF5M5MD), not here. Renamed from vercel.json so it cannot be picked up by accident: the CSP below is narrower than production and omits identitytoolkit / securetoken / firebaseapp.com, so Google and Apple sign-in would BOTH break under it. Before renaming this back, sync the CSP against the live header (curl -I https://tefillah.in/login) AND delete this _comment key -- Vercel's schema is additionalProperties:false and rejects unknown top-level keys.",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(self), payment=()" },
+        { "key": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains; preload" },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.tefillah.in; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        }
+      ]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    }
+  ]
+}

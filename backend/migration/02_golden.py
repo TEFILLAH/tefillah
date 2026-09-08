@@ -125,10 +125,30 @@ async def run_suite():
     mc = MongoClient(env["MONGO_URL"], serverSelectionTimeoutMS=20000)
     tdb = mc[TEST_DB]
 
-    user = tdb.users.find_one({}) or {}
-    partner = tdb.partners.find_one({}) or {}
-    admin = tdb.admins.find_one({}) or {}
-    prayer = tdb.prayer_requests.find_one({}) or {}
+    # Fixtures MUST be deterministic AND privileged. find_one({}) with no sort
+    # returns natural order, which Mongo is free to change -- and it did: this
+    # gate reported 881 "differences" with no code change at all, purely because
+    # the two admin docs came back in the other order.
+    #
+    # Sorting alone is not enough, because these fixtures decide how much of the
+    # API the run can even reach. This DB holds 2 admins (one ['all'], one with
+    # a limited set) and 43 partners of which only 3 are 'active'. Land on the
+    # limited admin and /admin/{partners,users,admins} turn into 403s; land on a
+    # pending_approval partner and the partner endpoints do the same. The gate
+    # still "passes" — while testing far fewer endpoints. So each fixture asks
+    # for the most-capable document first, then falls back to a sorted pick so
+    # the choice is stable either way.
+    def pick(col, *filters):
+        for flt in (*filters, {}):
+            doc = col.find_one(flt, sort=[("_id", 1)])
+            if doc:
+                return doc
+        return {}
+
+    user = pick(tdb.users, {"is_verified": True})
+    partner = pick(tdb.partners, {"status": "active"})
+    admin = pick(tdb.admins, {"permissions": "all"})
+    prayer = pick(tdb.prayer_requests)
 
     secret, alg = server.JWT_SECRET, server.JWT_ALGORITHM
     tok = {
@@ -220,8 +240,18 @@ def main():
     print(f"backend: {args.backend}")
 
     if args.mode == "capture":
+        # The baseline is gitignored, so an overwrite is UNRECOVERABLE -- there
+        # is no `git checkout` to undo it. One was lost this way on 2026-09-08.
+        # Keep a timestamped copy of whatever is already there before writing.
+        out = Path(args.out)
+        if out.exists():
+            backup = out.with_name(
+                f"{out.stem}.{datetime.now().strftime('%Y%m%d-%H%M%S')}.bak{out.suffix}")
+            backup.write_bytes(out.read_bytes())
+            print(f"existing baseline backed up -> {backup}")
+
         results, volatile = capture_twice()
-        Path(args.out).write_text(json.dumps(
+        out.write_text(json.dumps(
             {"results": results, "volatile": volatile}, indent=2, default=str), encoding="utf-8")
         print(f"captured {len(results)} endpoint/role responses -> {args.out}")
         print(f"auto-detected {len(volatile)} volatile field(s), excluded from comparison")
