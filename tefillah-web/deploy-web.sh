@@ -33,7 +33,8 @@ if [ "${1:-}" = "--repair-cache" ]; then
   aws s3 cp "s3://${BUCKET}/assets/" "s3://${BUCKET}/assets/" --recursive \
     --metadata-directive REPLACE \
     --cache-control 'public, max-age=31536000, immutable' --region "${REGION}"
-  aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths '/assets/*'
+  # '//assets/*' not '/assets/*' — see the invalidation comment further down.
+  aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths '//assets/*'
   echo "Done. Re-run without --repair-cache to deploy a new build."
   exit 0
 fi
@@ -72,9 +73,23 @@ fi
 
 # --- 5. Invalidate ONLY the always-revalidate paths (old hashed chunks stay
 #         valid at the edge for users mid-session) ----------------------------
+# The DOUBLE slashes are deliberate — do not "tidy" them to one.
+#
+# On Git Bash (this is a Windows machine) MSYS rewrites any argument starting
+# with a single '/' into a Windows path, so '/' and '/index.html' reached the
+# API as 'C:/Program Files/Git/' and 'C:/Program Files/Git/index.html' and
+# CloudFront rejected the whole call: "InvalidArgument: Your request contains
+# one or more invalid invalidation paths." That killed this step on 2026-09-08.
+# It failed quietly for so long because the upload has already succeeded by
+# then and index.html ships as no-cache/must-revalidate, so the deploy still
+# goes live — only the edge purge is skipped.
+#
+# '//foo' is MSYS's own escape: it collapses to '/foo'. MSYS_NO_PATHCONV=1 also
+# works for the paths but breaks the `aws` shim on this machine (it is a Python
+# wrapper whose shebang path gets mangled too), so use the escape, not the var.
 echo "==> CloudFront invalidation"
 aws cloudfront create-invalidation --distribution-id "${DIST_ID}" \
-  --paths '/' '/index.html' '/firebase-messaging-sw.js'
+  --paths '//' '//index.html' '//firebase-messaging-sw.js'
 
 echo "==> Smoke test"
 for p in "" "signup" "admin/login"; do
