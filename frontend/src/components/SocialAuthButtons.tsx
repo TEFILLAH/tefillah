@@ -144,13 +144,29 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
             list of sign-in options, and in an LTR row the first child is the
             more prominent slot. Sizes are identical either way. */}
         {appleReady && AppleAuthButton && (
-          <AppleAuthButton
-            buttonType={AppleAuthButtonType.SIGN_IN}
-            buttonStyle={isDark ? AppleAuthButtonStyle.WHITE : AppleAuthButtonStyle.BLACK}
-            cornerRadius={BORDER_RADIUS.md}
-            style={styles.appleButton}
-            onPress={handleApplePress}
-          />
+          // Wrapped, not modified: Apple's button must render itself and takes
+          // neither children nor a `disabled` prop, so the in-flight spinner
+          // for the 1-3s /auth/social call is an overlay on top of it.
+          <View style={styles.appleWrap}>
+            <AppleAuthButton
+              buttonType={AppleAuthButtonType.SIGN_IN}
+              buttonStyle={isDark ? AppleAuthButtonStyle.WHITE : AppleAuthButtonStyle.BLACK}
+              cornerRadius={BORDER_RADIUS.md}
+              style={styles.appleButton}
+              onPress={handleApplePress}
+            />
+            {signingIn === 'apple' && (
+              <View
+                style={[
+                  StyleSheet.absoluteFill,
+                  styles.appleBusy,
+                  { backgroundColor: isDark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)' },
+                ]}
+              >
+                <ActivityIndicator size="small" color={isDark ? '#000' : '#fff'} />
+              </View>
+            )}
+          </View>
         )}
 
         <TouchableOpacity
@@ -172,7 +188,11 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
           ) : (
             <>
               <GoogleGLogo size={18} />
+              {/* Pinned: the Apple button's 58 below is derived from this
+                  label's default size, and the native button cannot scale
+                  with Dynamic Type — letting only Google grow misaligns them. */}
               <Text
+                allowFontScaling={false}
                 style={[
                   styles.socialButtonText,
                   { color: isDark ? colors.text : '#3c4043' },
@@ -185,7 +205,9 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
         </TouchableOpacity>
       </View>
 
-      {!googleReady && (
+      {/* Apple does not depend on Firebase — never tell users to "use email"
+          while a working Apple button is sitting right above this line. */}
+      {!googleReady && !appleReady && (
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
           {t('landing.socialDisabled')}
         </Text>
@@ -225,6 +247,14 @@ const styles = StyleSheet.create({
   appleButton: {
     flex: 1,
     height: 58,
+  },
+  appleWrap: {
+    flex: 1,
+  },
+  appleBusy: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: BORDER_RADIUS.md,
   },
   socialButton: {
     flex: 1,

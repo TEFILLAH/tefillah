@@ -153,11 +153,15 @@ export default function CompleteProfileScreen() {
 
           <Animated.View entering={FadeInDown.duration(600).delay(100)} style={styles.titleContainer}>
             <View style={[styles.providerBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.providerBadgeDot} />
+              {/* Neutral, not Google green — the same dot sits next to the
+                  Apple mark too. */}
+              <View style={[styles.providerBadgeDot, { backgroundColor: colors.textMuted }]} />
               <Ionicons
                 name={provider === 'apple' ? 'logo-apple' : 'logo-google'}
                 size={14}
-                color={colors.accent}
+                // Apple's identity guidelines require the mark in
+                // black/white/monochrome, never a brand accent colour.
+                color={provider === 'apple' ? colors.text : colors.accent}
               />
               <Text style={[styles.providerText, { color: colors.accent }]}>
                 {t('completeProfile.signedInWith', { defaultValue: 'Signed in with' })} {provider.charAt(0).toUpperCase() + provider.slice(1)}
@@ -388,7 +392,6 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#34A853',
   },
   providerText: { fontSize: FONTS.sizes.xs, fontWeight: '600', letterSpacing: 0.3 },
   title: { fontSize: FONTS.sizes.xxl, fontWeight: '700', marginBottom: SPACING.xs, letterSpacing: 0.2 },

@@ -125,9 +125,12 @@ export default function LandingScreen() {
         await handleSocialAuthFlow(token, router);
       }
     } catch (error: any) {
-      const message = error.message === 'Network Error'
-        ? t('common.networkError', { defaultValue: 'Cannot reach server. Please check your connection.' })
-        : (error.message || 'Google sign-in failed');
+      // Server detail FIRST (same precedence as login.tsx / signup.tsx):
+      // without it a 401/429 surfaces as "Request failed with status code 401".
+      const message = error.response?.data?.detail
+        || (error.message === 'Network Error'
+          ? t('common.networkError', { defaultValue: 'Cannot reach server. Please check your connection.' })
+          : (error.message || 'Google sign-in failed'));
       showAlert(t('login.loginFailed', { defaultValue: 'Sign-In Failed' }), message);
     } finally {
       setSocialLoading(null);
@@ -150,9 +153,10 @@ export default function LandingScreen() {
         });
       }
     } catch (error: any) {
-      const message = error.message === 'Network Error'
-        ? t('common.networkError', { defaultValue: 'Cannot reach server. Please check your connection.' })
-        : (error.message || 'Apple sign-in failed');
+      const message = error.response?.data?.detail
+        || (error.message === 'Network Error'
+          ? t('common.networkError', { defaultValue: 'Cannot reach server. Please check your connection.' })
+          : (error.message || 'Apple sign-in failed'));
       showAlert(t('login.loginFailed', { defaultValue: 'Sign-In Failed' }), message);
     } finally {
       setSocialLoading(null);
@@ -310,13 +314,29 @@ export default function LandingScreen() {
                     than a custom one because the HIG requires their official
                     logo and an approved, Apple-localized title. */}
                 {appleReady && AppleAuthButton && (
-                  <AppleAuthButton
-                    buttonType={AppleAuthButtonType.SIGN_IN}
-                    buttonStyle={isDark ? AppleAuthButtonStyle.WHITE : AppleAuthButtonStyle.BLACK}
-                    cornerRadius={BORDER_RADIUS.md}
-                    style={styles.appleButton}
-                    onPress={handleAppleSignIn}
-                  />
+                  // Wrapped, not modified: Apple's button must render itself
+                  // and takes neither children nor a `disabled` prop, so the
+                  // in-flight spinner for the /auth/social call is an overlay.
+                  <View style={styles.appleWrap}>
+                    <AppleAuthButton
+                      buttonType={AppleAuthButtonType.SIGN_IN}
+                      buttonStyle={isDark ? AppleAuthButtonStyle.WHITE : AppleAuthButtonStyle.BLACK}
+                      cornerRadius={BORDER_RADIUS.md}
+                      style={styles.appleButton}
+                      onPress={handleAppleSignIn}
+                    />
+                    {socialLoading === 'apple' && (
+                      <View
+                        style={[
+                          StyleSheet.absoluteFill,
+                          styles.appleBusy,
+                          { backgroundColor: isDark ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.75)' },
+                        ]}
+                      >
+                        <ActivityIndicator size="small" color={isDark ? '#000' : '#fff'} />
+                      </View>
+                    )}
+                  </View>
                 )}
 
                 <TouchableOpacity
@@ -336,7 +356,10 @@ export default function LandingScreen() {
                       <View style={styles.googleIcon}>
                         <Text style={styles.googleIconText}>G</Text>
                       </View>
-                      <Text style={[styles.socialButtonText, { color: colors.text }]}>
+                      {/* Pinned: the Apple button's 50 below is derived from
+                          this row's default text size, and the native button
+                          cannot scale with Dynamic Type. */}
+                      <Text allowFontScaling={false} style={[styles.socialButtonText, { color: colors.text }]}>
                         {t('common.google')}
                       </Text>
                     </>
@@ -616,6 +639,14 @@ const styles = StyleSheet.create({
   appleButton: {
     flex: 1,
     height: 50,
+  },
+  appleWrap: {
+    flex: 1,
+  },
+  appleBusy: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: BORDER_RADIUS.md,
   },
   socialButton: {
     flex: 1,

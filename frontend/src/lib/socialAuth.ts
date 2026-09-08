@@ -1,6 +1,7 @@
 import { authAPI } from '../api/client';
 import { useAuthStore } from '../store/authStore';
 import { secureStorage } from './secureStorage';
+import { clearAppleNameCache } from './firebase';
 
 export type SocialAuthRouter = {
   replace: (path: any) => void;
@@ -49,6 +50,9 @@ export async function handleSocialAuthFlow(
     firebase_token: firebaseToken,
     full_name: meta.fullName ?? null,
   });
+
+  // The backend has the name now, so the one-time Apple name can be dropped.
+  if (meta.provider === 'apple') await clearAppleNameCache();
 
   // Persist auth token & user type (encrypted on native)
   await secureStorage.setItem('auth_token', response.access_token);

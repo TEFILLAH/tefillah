@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { secureStorage } from './secureStorage';
 
 // Firebase web-only configuration (used only for the web popup flow)
 const firebaseConfig = {
@@ -203,6 +204,25 @@ export type AppleSignInResult = {
   fullName: string | null;
 };
 
+/**
+ * Apple hands over the user's name on the FIRST authorization only — every
+ * retry returns null forever. If that first sign-in dies anywhere downstream
+ * (network blip, 401, 429) the name is gone and the account ends up named
+ * after a private-relay alias like `x7k2m9qp4t`. So stash it, keyed by Apple's
+ * stable `user` id, and replay it on the retry. Best-effort throughout:
+ * storage must never be able to break sign-in.
+ */
+const APPLE_NAME_KEY = 'apple_pending_full_name';
+
+/** Call once /auth/social has accepted the name — see socialAuth.ts. */
+export const clearAppleNameCache = async (): Promise<void> => {
+  try {
+    await secureStorage.removeItem(APPLE_NAME_KEY);
+  } catch {
+    // ignore — a stale entry is harmless, it is only replayed on an id match
+  }
+};
+
 /** True only where Sign in with Apple can actually run (iOS, module present). */
 export const isAppleSignInAvailable = async (): Promise<boolean> => {
   if (!AppleAuthRef) return false;
@@ -236,9 +256,27 @@ export const signInWithApple = async (): Promise<AppleSignInResult | null> => {
 
     const given = credential.fullName?.givenName?.trim() || '';
     const family = credential.fullName?.familyName?.trim() || '';
-    const fullName = `${given} ${family}`.trim();
+    let fullName: string | null = `${given} ${family}`.trim() || null;
 
-    return { identityToken: credential.identityToken, fullName: fullName || null };
+    const appleUserId: string | null = credential.user || null;
+    try {
+      if (fullName) {
+        await secureStorage.setItem(
+          APPLE_NAME_KEY,
+          JSON.stringify({ user: appleUserId, fullName }),
+        );
+      } else if (appleUserId) {
+        const saved = await secureStorage.getItem(APPLE_NAME_KEY);
+        const parsed = saved ? JSON.parse(saved) : null;
+        // Only replay for the SAME Apple account — never graft one user's
+        // name onto another's on a shared device.
+        if (parsed?.user === appleUserId) fullName = parsed.fullName || null;
+      }
+    } catch {
+      // Persistence is a nicety; sign-in proceeds without it.
+    }
+
+    return { identityToken: credential.identityToken, fullName };
   } catch (error: any) {
     // Apple signals a user-initiated cancel with this code; treat it like the
     // Google path does — silently, with no alert.
