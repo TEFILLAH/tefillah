@@ -36,6 +36,17 @@ from firebase_admin import credentials as firebase_credentials, messaging as fir
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# Configured HERE, before anything can log. The secret guards below emit at
+# WARNING/ERROR during module import; when basicConfig ran further down the file
+# those records fell through to logging.lastResort — still visible on stderr, but
+# with no timestamp and no logger name, which makes them near-impossible to find
+# or alert on in CloudWatch.
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 client = AsyncIOMotorClient(mongo_url)
@@ -53,17 +64,29 @@ repos = make_repos(db)
 def _looks_production(mongo_target: Optional[str] = None) -> bool:
     """True unless this is plainly a developer laptop.
 
-    Any deployment against a non-local database (Railway / Atlas / Elastic
-    Beanstalk) counts as production. RAILWAY_ENVIRONMENT / PRODUCTION are NOT
-    set by Elastic Beanstalk, which is why the database target — the one signal
-    every environment must provide — is what actually catches EB.
-
     Single source of truth for every "is this prod?" secret guard below; adding
     a second heuristic is how one of them ends up not covering EB.
+
+    RAILWAY_ENVIRONMENT / PRODUCTION are NOT set by Elastic Beanstalk, so the
+    remaining two signals are what actually catch it:
+
+    - DB_BACKEND: anything other than mongo means a real deployment. Nobody
+      runs DynamoDB on a laptop, and this survives the Mongo teardown.
+    - the Mongo target: a non-local URL.
+
+    DB_BACKEND is checked FIRST and is not optional, because the Mongo signal is
+    on borrowed time. Production already runs DB_BACKEND=dynamo, where nothing
+    reads MONGO_URL any more (repo/__init__.py builds DynamoRepos with no db) —
+    it is now a dead env var that merely LOOKS load-bearing. The day someone
+    tidies it off the EB environment, `mongo_url` falls back to its localhost
+    default and every guard below would quietly decide it is on a laptop:
+    the admin bootstrap endpoint reopens on the secret published in this repo,
+    and the JWT default-secret guard stops firing. Hence the second signal.
     """
     target = ((mongo_url if mongo_target is None else mongo_target) or '').lower()
     return bool(
-        os.environ.get('RAILWAY_ENVIRONMENT')
+        os.environ.get('DB_BACKEND', 'mongo').strip().lower() not in ('', 'mongo')
+        or os.environ.get('RAILWAY_ENVIRONMENT')
         or os.environ.get('PRODUCTION')
         or 'mongodb+srv' in target
         or (target and 'localhost' not in target and '127.0.0.1' not in target)
@@ -235,11 +258,7 @@ api_router = APIRouter(prefix="/api")
 security = HTTPBearer(auto_error=False)
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# (logging is configured at the top of this file, above the secret guards)
 
 # ==================== SECURITY HELPERS ====================
 
@@ -3025,12 +3044,26 @@ async def upload_partner_photo(file: UploadFile = File(...), partner: dict = Dep
 
 @api_router.post("/admin/create-first-admin")
 async def create_first_admin(admin_data: AdminCreate, request: Request):
+    # Every other auth route is throttled; this one was not, even though it is
+    # guarded by a single static header secret with no lockout behind it.
+    client_ip = get_client_ip(request)
+    if not check_rate_limit(f"admin_bootstrap:{client_ip}", 3):
+        raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
     admin_secret = request.headers.get("x-admin-secret", "")
     # ADMIN_BOOTSTRAP_DISABLED: the configured secret is the one hardcoded in
     # this repo and we look like production — no caller can be authentic, so
     # refuse before comparing. Same 403 as a wrong secret: don't tell an
     # attacker which of the two it was.
-    if ADMIN_BOOTSTRAP_DISABLED or not admin_secret or admin_secret != ADMIN_SECRET:
+    #
+    # compare_digest, not ==: a plain compare short-circuits on the first
+    # differing byte and leaks the secret's prefix over enough samples. The
+    # rate limit above makes that impractical, but the two belong together.
+    # Compared as bytes: compare_digest rejects non-ASCII str with TypeError,
+    # and a header can carry non-ASCII — that would be a 500, not a 403.
+    if (ADMIN_BOOTSTRAP_DISABLED or not admin_secret
+            or not hmac.compare_digest(admin_secret.encode('utf-8', 'surrogateescape'),
+                                       ADMIN_SECRET.encode('utf-8', 'surrogateescape'))):
         raise HTTPException(status_code=403, detail="Invalid admin secret")
     
     # VULN-02 (TASK-2): hard-fail once any admin exists (one-time bootstrap only,

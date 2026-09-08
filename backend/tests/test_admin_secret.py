@@ -16,6 +16,7 @@ import os
 import sys
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 warnings.filterwarnings("ignore")
 
@@ -39,9 +40,18 @@ def check(label, condition):
 
 
 class _Req:
-    """Minimal stand-in for starlette Request — the endpoint reads headers only."""
+    """Minimal stand-in for starlette Request: headers + the client address.
+
+    `client` is what get_client_ip reads for the endpoint's rate limit. Each
+    instance gets a UNIQUE ip so the 3-per-window limit can't make one check
+    bleed into the next — this file makes more than 3 bootstrap calls in a run.
+    """
+    _n = 0
+
     def __init__(self, secret):
         self.headers = {"x-admin-secret": secret} if secret is not None else {}
+        _Req._n += 1
+        self.client = SimpleNamespace(host=f"203.0.113.{_Req._n}")
 
 
 class _Admins:
@@ -57,7 +67,7 @@ class _Admins:
         raise AssertionError("test attempted a real admin insert")
 
 
-async def call_bootstrap(secret, disabled):
+async def call_bootstrap(secret, disabled, req=None):
     """Run the endpoint against stub repos. Returns (status, repo_touched)."""
     admins = _Admins()
     real_repos, real_flag = server.repos, server.ADMIN_BOOTSTRAP_DISABLED
@@ -66,7 +76,7 @@ async def call_bootstrap(secret, disabled):
     try:
         body = server.AdminCreate(name="Test Admin", email="test@example.com",
                                   password="Str0ng!Passw0rd")
-        await server.create_first_admin(body, _Req(secret))
+        await server.create_first_admin(body, req or _Req(secret))
         return None, admins.touched
     except HTTPException as exc:
         return exc.status_code, admins.touched
@@ -85,7 +95,9 @@ def env(**kwargs):
 
 async def run():
     looks = server._looks_production
-    env(RAILWAY_ENVIRONMENT=None, PRODUCTION=None)
+    # DB_BACKEND is a detection signal now, so it must be pinned explicitly or
+    # these cases would pass/fail on whatever the ambient .env happens to say.
+    env(RAILWAY_ENVIRONMENT=None, PRODUCTION=None, DB_BACKEND=None)
 
     # ---- detection: developer laptops are NOT production --------------------
     check("localhost mongo is not production",
@@ -93,6 +105,23 @@ async def run():
     check("127.0.0.1 mongo is not production",
           looks("mongodb://127.0.0.1:27017/tefilah") is False)
     check("unset MONGO_URL is not production", looks("") is False)
+    env(DB_BACKEND="mongo")
+    check("DB_BACKEND=mongo on localhost is not production",
+          looks("mongodb://localhost:27017") is False)
+    env(DB_BACKEND=None)
+
+    # ---- detection: DB_BACKEND survives the Mongo teardown ------------------
+    # Production already runs DB_BACKEND=dynamo, where MONGO_URL is dead config.
+    # If it is ever removed from the EB environment, mongo_url falls back to its
+    # localhost default and every Mongo-based signal below reads "laptop" —
+    # reopening the admin bootstrap endpoint and disarming the JWT guard. This
+    # is the case that must hold on its own, with NO Mongo signal at all.
+    env(DB_BACKEND="dynamo")
+    check("DB_BACKEND=dynamo with the DEFAULT localhost mongo_url IS production",
+          looks("mongodb://localhost:27017") is True)
+    check("DB_BACKEND=dynamo with MONGO_URL entirely absent IS production",
+          looks("") is True)
+    env(DB_BACKEND=None)
 
     # ---- detection: the case the old ADMIN_SECRET guard missed --------------
     # Elastic Beanstalk sets no RAILWAY_ENVIRONMENT and no PRODUCTION. The
@@ -139,6 +168,15 @@ async def run():
 
     status, _ = await call_bootstrap("wrong-secret", disabled=False)
     check("wrong secret still refused when enabled (403)", status == 403)
+
+    # ---- the endpoint is throttled -----------------------------------------
+    # A single static header secret with no lockout is guessable given enough
+    # attempts; the limit is 3 per window per IP. All four calls below come from
+    # ONE ip, so the 4th must be refused with 429 rather than 403.
+    fixed = _Req("nope")
+    codes = [(await call_bootstrap("nope", False, req=fixed))[0] for _ in range(4)]
+    check(f"4th attempt from one IP is rate-limited, not just refused (got {codes})",
+          codes[:3] == [403, 403, 403] and codes[3] == 429)
 
     print()
     if failures:

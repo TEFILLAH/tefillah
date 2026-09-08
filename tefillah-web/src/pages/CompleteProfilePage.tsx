@@ -73,7 +73,9 @@ export default function CompleteProfilePage() {
       setValidation('Please enter a valid phone number.');
       return;
     }
-    if (!form.location_city.trim()) {
+    // < 2, not just empty: the backend requires min_length=2 here as well, so a
+    // 1-character city would otherwise come back as a raw 422.
+    if (form.location_city.trim().length < 2) {
       setValidation('Please enter your city.');
       return;
     }
@@ -136,6 +138,7 @@ export default function CompleteProfilePage() {
       <form onSubmit={onSubmit} className="mt-8 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
         {errorBlock && (
           <div
+            role="alert"
             className="flex items-start gap-2 rounded-lg p-3 text-sm"
             style={{
               background: 'rgba(185, 28, 28, 0.08)',
@@ -152,6 +155,9 @@ export default function CompleteProfilePage() {
           <Field label="Full Name *" icon={<User size={16} />}>
             <input
               required
+              autoFocus
+              maxLength={100}
+              autoComplete="name"
               value={form.name}
               onChange={(e) => update('name', e.target.value)}
               className="input pl-10"
@@ -193,7 +199,6 @@ export default function CompleteProfilePage() {
           <PhoneCodeInput
             dial={country?.dial ?? ''}
             required
-            autoFocus
             autoComplete="tel"
             value={form.phone}
             onChange={(e) => update('phone', e.target.value)}
@@ -218,11 +223,16 @@ function Field({
   icon?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  // The <label> WRAPS the control rather than sitting beside it: that associates
+  // the two implicitly, with no id to generate and thread through children like
+  // CountrySelect and PhoneCodeInput. Previously the label was a sibling with no
+  // htmlFor, so nothing was associated at all — screen readers announced a bare
+  // textbox, and the browser's `required` bubble couldn't name the field.
   return (
-    <div>
-      <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
+    <label className="block">
+      <span className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
         {label}
-      </label>
+      </span>
       <div className="relative">
         {icon && (
           <span
@@ -234,6 +244,6 @@ function Field({
         )}
         {children}
       </div>
-    </div>
+    </label>
   );
 }
