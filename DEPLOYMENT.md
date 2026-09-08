@@ -39,11 +39,24 @@ yarn dev                   # Starts Expo web dev server
 
 ### First Admin Setup
 ```bash
-# After backend is running, create the first super admin:
-curl -X POST "http://localhost:8001/api/admin/create-first-admin?admin_secret=YOUR_ADMIN_SECRET" \
+# After backend is running, create the first super admin.
+# The secret goes in the x-admin-secret HEADER, not a query parameter:
+curl -X POST "http://localhost:8001/api/admin/create-first-admin" \
   -H "Content-Type: application/json" \
+  -H "x-admin-secret: YOUR_ADMIN_SECRET" \
   -d '{"name": "Super Admin", "email": "admin@tefillah.in", "password": "your-strong-password"}'
 ```
+
+`ADMIN_SECRET` **must** be set to a real value first. While it is left at the
+built-in repo default (`tefilah-admin-secret-2024`) and the environment looks like
+production — a `mongodb+srv://` or non-localhost `MONGO_URL`, a `DB_BACKEND` other
+than `mongo`, or `RAILWAY_ENVIRONMENT`/`PRODUCTION` set — this endpoint fails closed
+and returns `403` to every caller, including one sending the correct default. The
+startup log prints `🚨 ADMIN_SECRET is the built-in default on a production
+deployment` when that is the case.
+
+Other responses: `409` once an admin exists (one-time endpoint), and `429` if you
+exceed **3 attempts per IP per 60-second window**.
 
 ---
 

@@ -7,8 +7,9 @@ A full-stack sacred prayer request platform with AI-powered comfort messages.
 ```
 Frontend (Expo/React Native)  -->  Backend (FastAPI/Python)  -->  MongoDB
                                         |
-                                        +--> Ollama (Local LLM) - comfort messages & Bible verses
-                                        +--> MailHog (Local SMTP) - email verification
+                                        +--> LLM - comfort messages & Bible verses
+                                        |    (Gemini by default; Ollama/OpenRouter optional)
+                                        +--> Resend API - verification & notification email
 ```
 
 | Component      | Technology                          | Default Port |
@@ -16,8 +17,9 @@ Frontend (Expo/React Native)  -->  Backend (FastAPI/Python)  -->  MongoDB
 | Frontend       | Expo SDK 54, React Native, TypeScript | 8081         |
 | Backend API    | FastAPI, Python 3.11+, Motor (async MongoDB) | 8001  |
 | Database       | MongoDB                             | 27017        |
-| Email (local)  | MailHog                             | SMTP: 1025, Web UI: 8025 |
-| LLM (local)    | Ollama (deepseek-r1:8b)            | 11434        |
+| Email          | Resend HTTP API (`RESEND_API_KEY`)  | outbound HTTPS |
+| LLM (default)  | Google Gemini (`gemini-2.5-flash`)  | outbound HTTPS |
+| LLM (optional) | Ollama (deepseek-r1:8b), local      | 11434        |
 
 ## Prerequisites
 
@@ -27,7 +29,6 @@ Install these before proceeding:
 - **Node.js 18+** - https://nodejs.org/
 - **Yarn** - `npm install -g yarn` (after Node.js is installed)
 - **MongoDB Community Server** - https://www.mongodb.com/try/download/community
-- **MailHog** - https://github.com/mailhog/MailHog/releases
 - **Ollama** (optional) - https://ollama.com/download
 
 ---
@@ -53,31 +54,36 @@ Make sure `C:\data\db` directory exists first: `mkdir C:\data\db`
 
 ---
 
-## Step 2: Install & Start MailHog
+## Step 2: Configure Email (Resend)
 
-MailHog is a local email testing tool. The backend sends verification emails to it.
+The backend no longer speaks SMTP — there is no MailHog/local mail step. All
+outbound mail (verification codes, password resets, account notices) goes through
+the **Resend HTTP API**.
 
-### Windows
-1. Download `MailHog_windows_amd64.exe` from https://github.com/mailhog/MailHog/releases
-2. Place it somewhere convenient (e.g., `C:\Tools\MailHog_windows_amd64.exe`)
-3. Run it:
-   ```bash
-   C:\Tools\MailHog_windows_amd64.exe
+1. Get an API key from https://resend.com
+2. Set it in `backend/.env`:
    ```
-4. Keep this terminal window open
+   RESEND_API_KEY=re_...
+   SENDER_EMAIL=admin@tefillah.in
+   ```
 
-**MailHog provides:**
-- SMTP server on `localhost:1025` (backend sends emails here)
-- Web UI on http://localhost:8025 (open this in your browser to read emails)
-
-### Verify
-Open http://localhost:8025 in your browser. You should see the MailHog web interface (empty inbox).
+### Running without an API key
+If `RESEND_API_KEY` is empty the backend still starts and every account action
+still succeeds — sending is skipped and the backend logs:
+```
+RESEND_API_KEY not set - skipping email to <address>
+```
+Verification codes are **not** printed to the console, so to verify a local test
+account you need either a working Resend key or a direct database update.
 
 ---
 
-## Step 3: Install & Start Ollama (Optional but Recommended)
+## Step 3: Install & Start Ollama (Optional)
 
 Ollama runs a local AI model that generates personalized comfort messages and Bible verses for each prayer request. **The app works without Ollama** - it will use hardcoded fallback messages instead.
+
+**Only needed if you set `LLM_PROVIDER=ollama`.** The default provider is Gemini
+(`LLM_PROVIDER=gemini` + `GEMINI_API_KEY`), which needs no local model download.
 
 ### Windows
 1. Download and install from https://ollama.com/download
@@ -130,7 +136,6 @@ pip install -r requirements.txt
 ```
 
 ### 4.3 Configure Environment
-The `.env` file is already set up for local development. Verify it exists:
 ```bash
 cat .env
 ```
@@ -140,18 +145,34 @@ If missing, copy from example:
 cp .env.example .env
 ```
 
-**Default `.env` values (no changes needed for local dev):**
+⚠️ **The committed `backend/.env` points at the PRODUCTION Atlas cluster.** Before
+doing local work, override `MONGO_URL` and `DB_NAME` so you are not reading and
+writing live data.
+
+**`.env.example` values (see that file for the full list):**
 ```
 MONGO_URL=mongodb://localhost:27017
 DB_NAME=tefilah
-JWT_SECRET=tefilah-super-secret-key-change-in-production-2024
+JWT_SECRET=your-super-secret-key-change-in-production
 ADMIN_SECRET=tefilah-admin-secret-2024
+LLM_PROVIDER=gemini            # gemini (default) | openrouter | ollama
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=deepseek-r1:8b
-SMTP_HOST=localhost
-SMTP_PORT=1025
-SENDER_EMAIL=noreply@tefilah.local
+RESEND_API_KEY=
+SENDER_EMAIL=admin@tefillah.in
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8081,http://localhost:19006
 ```
+
+Two of these fail closed rather than defaulting quietly once the environment looks
+like production (a `mongodb+srv://` or non-localhost `MONGO_URL`, a `DB_BACKEND`
+other than `mongo`, or `RAILWAY_ENVIRONMENT`/`PRODUCTION` set):
+
+- `JWT_SECRET` left at its built-in default **refuses to start the API** (override
+  with `ALLOW_DEFAULT_JWT_SECRET=true`, not recommended)
+- `ADMIN_SECRET` left at its built-in default disables the admin-bootstrap
+  endpoint — see Step 6
 
 ### 4.4 Start the Backend Server
 ```bash
@@ -169,12 +190,15 @@ INFO:     server - Database indexes created
 Open http://localhost:8001/api/ in your browser. You should see:
 ```json
 {
-  "message": "TEFILAH API - Sacred Prayer Platform",
-  "status": "active",
-  "version": "2.0",
-  "llm": "Ollama (deepseek-r1:8b)"
+  "message": "Tefillah - Sacred Prayer Platform",
+  "status": "active"
 }
 ```
+
+The version and LLM-provider fields were deliberately removed from this response
+so it does not fingerprint the stack. For a liveness probe use
+http://localhost:8001/api/health. Interactive API docs (`/docs`, `/redoc`,
+`/openapi.json`) are disabled unless you set `ENABLE_DOCS=true`.
 
 ---
 
@@ -187,17 +211,20 @@ yarn install
 ```
 
 ### 5.2 Configure Environment
-The `.env` file should already exist. Verify:
+Only `.env.example` is committed, so create your own:
 ```bash
-cat .env
+cp .env.example .env
 ```
 
-It should contain:
+It must contain:
 ```
 EXPO_PUBLIC_BACKEND_URL=http://localhost:8001
 ```
 
-If missing: `cp .env.example .env`
+⚠️ **This is not optional for local work.** When `EXPO_PUBLIC_BACKEND_URL` is unset
+the client falls back to the *production* API, `https://api.tefillah.in` — so a
+missing `.env` silently points your dev build at live data. The value is baked in
+at build time, so restart the Expo dev server after changing it.
 
 ### 5.3 Start the Frontend (Web)
 ```bash
@@ -208,8 +235,13 @@ This starts Expo development server. Press `w` if it doesn't auto-open the web b
 
 ### 5.4 Alternative: Build & Serve Static Files
 ```bash
-yarn build          # Builds static web files into dist/
-yarn start          # Serves the built files on http://localhost:3000
+yarn build          # expo export --platform web  ->  static files in dist/
+```
+
+`yarn start` runs `expo start` (the Expo dev server), it does **not** serve the
+built `dist/` folder. To preview the build, point any static file server at it:
+```bash
+python -m http.server 3000 --directory dist
 ```
 
 ### 5.5 Alternative: Run on Mobile
@@ -218,24 +250,77 @@ yarn ios            # iOS Simulator (macOS only)
 yarn android        # Android Emulator
 ```
 
-For Android emulator, the backend URL auto-switches to `http://10.0.2.2:8001`.
+There is no per-platform URL rewriting — the Android emulator uses whatever
+`EXPO_PUBLIC_BACKEND_URL` says. Since `localhost` inside the emulator is the
+emulator itself, set `EXPO_PUBLIC_BACKEND_URL=http://10.0.2.2:8001` to reach a
+backend running on the host machine.
 
 ---
 
 ## Step 6: Create an Admin User (Optional)
 
-There is no admin registration UI. Create the first admin via API:
+There is no admin registration UI. The first admin is created through a one-time
+bootstrap endpoint, which is deliberately hard to reach. Read 6.1 before running
+the curl — the endpoint refuses the secret shipped in this repo.
+
+### 6.1 Set a real `ADMIN_SECRET` first
+
+The secret goes in the **`x-admin-secret` request header**, not in a query
+parameter, and it is compared against the `ADMIN_SECRET` environment variable.
+
+If `ADMIN_SECRET` is still the built-in repo default (`tefilah-admin-secret-2024`)
+**and** the environment looks like production, the endpoint fails closed and
+returns `403` to *every* caller — including one that presents the correct default.
+The default value is published in this repository, so it is treated as no secret
+at all.
+
+"Looks like production" is true when any of these hold:
+
+- `DB_BACKEND` is set to anything other than `mongo`
+- `RAILWAY_ENVIRONMENT` or `PRODUCTION` is set
+- `MONGO_URL` is a `mongodb+srv://` URL, or points at any host other than `localhost` / `127.0.0.1`
+
+⚠️ **The committed `backend/.env` points at the production Atlas cluster
+(`mongodb+srv://...`), so an ordinary developer laptop already counts as
+production** — the bootstrap endpoint returns 403 locally too until you change
+one of the two things below.
 
 ```bash
-curl -X POST "http://localhost:8001/api/admin/create-first-admin?admin_secret=tefilah-admin-secret-2024" \
+# Option A (recommended) — use a real secret, works in any environment.
+# 1. Generate one:
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 2. Put it in backend/.env as:  ADMIN_SECRET=<the generated value>
+
+# Option B — make the machine look like a laptop again, so the default is accepted.
+# In backend/.env, point Mongo at a local server and leave DB_BACKEND unset (or 'mongo'):
+#   MONGO_URL=mongodb://localhost:27017
+#   DB_NAME=tefilah_test
+```
+
+Restart the backend after editing `.env` — both values are read once at import.
+
+### 6.2 Create the admin
+
+```bash
+curl -X POST "http://localhost:8001/api/admin/create-first-admin" \
   -H "Content-Type: application/json" \
+  -H "x-admin-secret: <your ADMIN_SECRET value>" \
   -d "{\"name\": \"Admin\", \"email\": \"admin@tefilah.local\", \"password\": \"admin123\"}"
 ```
 
 **On Windows PowerShell:**
 ```powershell
-Invoke-RestMethod -Method Post -Uri "http://localhost:8001/api/admin/create-first-admin?admin_secret=tefilah-admin-secret-2024" -ContentType "application/json" -Body '{"name": "Admin", "email": "admin@tefilah.local", "password": "admin123"}'
+Invoke-RestMethod -Method Post -Uri "http://localhost:8001/api/admin/create-first-admin" -Headers @{ "x-admin-secret" = "<your ADMIN_SECRET value>" } -ContentType "application/json" -Body '{"name": "Admin", "email": "admin@tefilah.local", "password": "admin123"}'
 ```
+
+### 6.3 Responses you may hit
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Admin created. The response contains an `access_token` valid for 4 hours. |
+| `403 Invalid admin secret` | Wrong or missing header, **or** the bootstrap is disabled because `ADMIN_SECRET` is still the repo default on a production-looking environment. The two cases are deliberately indistinguishable to the caller — check the backend startup log, which prints `🚨 ADMIN_SECRET is the built-in default on a production deployment` when the endpoint is disabled. |
+| `409 Admin already exists` | One-time endpoint. Use the admin invite flow instead. |
+| `429 Too many attempts` | Throttled to **3 attempts per IP per 60-second window**. Wait a minute and retry. |
 
 Then log in through the app's admin login page.
 
@@ -243,32 +328,27 @@ Then log in through the app's admin login page.
 
 ## Quick Start (All Services)
 
-Open 4 terminals and run in order:
+Open 3 terminals and run in order:
 
 **Terminal 1 - MongoDB** (skip if running as a service):
 ```bash
 mongod
 ```
 
-**Terminal 2 - MailHog:**
-```bash
-C:\Tools\MailHog_windows_amd64.exe
-```
-
-**Terminal 3 - Backend:**
+**Terminal 2 - Backend:**
 ```bash
 cd backend
 venv\Scripts\activate
 uvicorn server:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-**Terminal 4 - Frontend:**
+**Terminal 3 - Frontend:**
 ```bash
 cd frontend
 yarn dev
 ```
 
-**Optional Terminal 5 - Ollama** (skip if already running):
+**Optional Terminal 4 - Ollama** (only if `LLM_PROVIDER=ollama`, and skip if already running):
 ```bash
 ollama serve
 ```
@@ -283,10 +363,11 @@ ollama serve
 3. Click "Create Account"
 4. Fill in name, email, password (step 1 and step 2)
 5. After signup, you'll land on the verification screen
-6. Open http://localhost:8025 (MailHog) in another tab
-7. Find the email from `noreply@tefilah.local` - copy the 6-digit code
-8. Enter the code on the verification screen
-9. You're in! You'll see the home screen
+6. Read the 6-digit code from the email sent by `SENDER_EMAIL` via Resend. With no
+   `RESEND_API_KEY` set, no email is sent and the code is not logged — you will
+   have to read `verification_code` off the user document in the database
+7. Enter the code on the verification screen
+8. You're in! You'll see the home screen
 
 ### Submit a Prayer
 1. From the home screen, tap "Submit a Prayer"
@@ -315,12 +396,12 @@ ollama serve
 | Service        | Port  | URL                          | Purpose                    |
 |----------------|-------|------------------------------|----------------------------|
 | Frontend (dev) | 8081  | http://localhost:8081         | Web app                    |
-| Frontend (prod)| 3000  | http://localhost:3000         | Built static files         |
+| Frontend (prod)| any   | -                            | Built static files in `dist/`, served by a static server of your choice |
 | Backend API    | 8001  | http://localhost:8001/api/    | REST API                   |
 | MongoDB        | 27017 | mongodb://localhost:27017     | Database                   |
-| MailHog SMTP   | 1025  | -                            | Backend sends emails here  |
-| MailHog Web UI | 8025  | http://localhost:8025         | View received emails       |
-| Ollama         | 11434 | http://localhost:11434        | Local LLM API              |
+| Ollama         | 11434 | http://localhost:11434        | Local LLM API (only when `LLM_PROVIDER=ollama`) |
+
+Email has no local port — it goes out over HTTPS to the Resend API.
 
 ---
 
@@ -337,10 +418,12 @@ ollama serve
 - If Ollama is NOT running, fallback messages are used (instant)
 - Backend Ollama timeout is 30 seconds; frontend timeout is 60 seconds
 
-### MailHog not receiving emails
-- Verify MailHog is running (check http://localhost:8025)
-- Check backend `.env` has `SMTP_HOST=localhost` and `SMTP_PORT=1025`
-- Look at backend terminal for "Email sent to ..." log messages
+### Emails not arriving
+- Check backend `.env` has a valid `RESEND_API_KEY`. If it is empty the backend
+  logs `RESEND_API_KEY not set - skipping email to ...` and sends nothing
+- Look at the backend terminal for `Verification email sent to ...`
+- The sending domain must be verified in Resend, and `SENDER_EMAIL` must be on it
+- There is no MailHog/SMTP path any more — the backend only speaks the Resend HTTP API
 
 ### MongoDB connection error
 - Verify MongoDB is running: `mongosh --eval "db.adminCommand('ping')"`
