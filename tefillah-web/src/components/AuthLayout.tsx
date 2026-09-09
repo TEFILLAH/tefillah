@@ -21,7 +21,7 @@ import Logo from './Logo';
  * width was never really the problem, the unbalanced whitespace was. A wider
  * form would be worse, not better; login inputs should not span a monitor.
  *
- * Mobile is untouched: below `lg` this is the original stacked, top-aligned
+ * Mobile is untouched: below `md` this is the original stacked, top-aligned
  * layout, so nothing about the phone experience changes.
  */
 export default function AuthLayout({
@@ -51,12 +51,17 @@ export default function AuthLayout({
   width?: 'md' | 'xl';
 }) {
   return (
+    // `md` (768px), NOT `lg`: at lg the fix only reached maximised windows, so a
+    // browser at 960px — half of a 1920 monitor, the commonest non-maximised
+    // width — still rendered the original 448px strip pinned to the top with
+    // 256px dead either side. Measured, not assumed.
+    //
     // 4rem = the sticky header height (h-16 in Header.tsx). Subtracting it keeps
     // the optical centre of the card in the centre of the space BELOW the header
     // rather than of the whole viewport, which would sit visibly low.
-    <div className="lg:min-h-[calc(100vh-4rem)] lg:flex lg:items-center lg:justify-center">
+    <div className="md:min-h-[calc(100vh-4rem)] md:flex md:items-center md:justify-center">
       <div
-        className={`mx-auto w-full ${width === 'xl' ? 'max-w-xl' : 'max-w-md'} px-4 sm:px-6 py-12 sm:py-16 lg:py-10`}
+        className={`mx-auto w-full ${width === 'xl' ? 'max-w-xl' : 'max-w-md'} px-4 sm:px-6 py-12 sm:py-16 md:py-10`}
       >
         <div className="text-center anim-fade-up">
           <Logo size="md" />

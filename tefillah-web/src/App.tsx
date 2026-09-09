@@ -48,15 +48,23 @@ export default function App() {
       <BrowserRouter>
         <ScrollToTop />
         <Routes>
-          {/* Public surface (landing, auth, legal) */}
+          {/* Marketing surface — keeps the footer. */}
           <Route element={<Layout variant="public" />}>
             <Route index element={<ErrorBoundary><LandingPage /></ErrorBoundary>} />
+            <Route path="about" element={<ErrorBoundary><AboutPage /></ErrorBoundary>} />
+          </Route>
+
+          {/* Auth surface — NO footer. AuthLayout centres these in the space
+              below the header; with the ~450px marketing footer underneath, the
+              card was centred in the viewport but not in the document, so every
+              auth page carried a scrollbar to a four-column link grid and a
+              second Tefillah logo. Centred and footer-less is the whole point. */}
+          <Route element={<Layout variant="public" showFooter={false} />}>
             <Route path="login" element={<ErrorBoundary><LoginPage /></ErrorBoundary>} />
             <Route path="signup" element={<ErrorBoundary><SignupPage /></ErrorBoundary>} />
             <Route path="verify" element={<ErrorBoundary><VerifyPage /></ErrorBoundary>} />
             <Route path="complete-profile" element={<ErrorBoundary><CompleteProfilePage /></ErrorBoundary>} />
             <Route path="forgot-password" element={<ErrorBoundary><ForgotPasswordPage /></ErrorBoundary>} />
-            <Route path="about" element={<ErrorBoundary><AboutPage /></ErrorBoundary>} />
             <Route path="partner/login" element={<ErrorBoundary><PartnerLoginPage /></ErrorBoundary>} />
             <Route path="partner/signup" element={<ErrorBoundary><PartnerSignupPage /></ErrorBoundary>} />
           </Route>

@@ -29,7 +29,13 @@ export default function AiContentNotice({ prayerId }: { prayerId?: string }) {
   };
 
   return (
-    <div className="mt-4 flex flex-col items-center text-center">
+    // No alignment on the root ON PURPOSE. This renders in two very different
+    // contexts — a centred confirmation page and a LEFT-aligned history card —
+    // and hard-centring here made the notice and its Report link float to the
+    // middle of the history panel while the blockquote above them sat flush
+    // left. Same bug as Logo centring itself beside a left-aligned heading.
+    // The call site decides.
+    <div className="mt-4">
       <p
         className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide"
         style={{ color: 'var(--color-text-muted)' }}
@@ -61,7 +67,7 @@ export default function AiContentNotice({ prayerId }: { prayerId?: string }) {
               placeholder="What's wrong with this response? (optional)"
             />
             {error && <p className="mt-1 text-xs" style={{ color: 'var(--color-error)' }}>{error}</p>}
-            <div className="mt-2 flex justify-center gap-2">
+            <div className="mt-2 flex gap-2">
               <button
                 type="button"
                 onClick={flag}

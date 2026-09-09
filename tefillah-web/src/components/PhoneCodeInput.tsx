@@ -17,10 +17,10 @@ export default function PhoneCodeInput({
         style={{
           padding: '0.75rem 0.875rem',
           background: 'var(--color-surface)',
-          border: '1px solid var(--color-border-strong)',
+          border: '1px solid var(--color-border)',
           borderRight: 'none',
-          borderTopLeftRadius: 'var(--radius-md)',
-          borderBottomLeftRadius: 'var(--radius-md)',
+          borderTopLeftRadius: '0.6rem',
+          borderBottomLeftRadius: '0.6rem',
           color: 'var(--color-text-secondary)',
           fontSize: '0.95rem',
           whiteSpace: 'nowrap',

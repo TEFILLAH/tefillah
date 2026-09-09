@@ -96,7 +96,7 @@ export default function ForgotPasswordPage() {
       )}
 
       {stage === 'request' ? (
-        <form onSubmit={requestCode} className="mt-6 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
+        <form onSubmit={requestCode} className="surface-card p-6 sm:p-8 space-y-4">
           <div>
             <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>Email</label>
             <div className="relative">
@@ -117,7 +117,7 @@ export default function ForgotPasswordPage() {
           </button>
         </form>
       ) : (
-        <form onSubmit={resetPassword} className="mt-6 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
+        <form onSubmit={resetPassword} className="surface-card p-6 sm:p-8 space-y-4">
           <div>
             <label className="block text-sm mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>Reset code</label>
             <div className="relative">

@@ -89,6 +89,13 @@ export default function GoogleSignInButton({ text = 'continue_with' }: { text?: 
         if (cancelled || !ref.current || !gsi) return;
         gsi.initialize({ client_id: CLIENT_ID, callback: handleCredential, ux_mode: 'popup' });
         ref.current.innerHTML = '';
+        // 400 is GIS's OWN documented maximum for the `width` parameter — it
+        // is not a taste choice. Raising this to 560 was tried and Google still
+        // rendered 400 while the Apple button (which mirrors this formula)
+        // grew to 462, breaking the Apple/Google parity that App Store
+        // guideline 4.8 requires. Keep both at 400; on the wider signup card
+        // the social pair is narrower than the full-width submit, which is the
+        // lesser of the two evils.
         const width = Math.min(400, Math.max(240, ref.current.clientWidth || 320));
         gsi.renderButton(ref.current, {
           type: 'standard',

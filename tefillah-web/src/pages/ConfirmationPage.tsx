@@ -70,7 +70,9 @@ export default function ConfirmationPage() {
 
       {(data.bible_verse || data.comfort_message) && (
         <div className="anim-fade-up delay-200">
-          <AiContentNotice prayerId={data.prayer_id} />
+          <div className="text-center">
+            <AiContentNotice prayerId={data.prayer_id} />
+          </div>
         </div>
       )}
 

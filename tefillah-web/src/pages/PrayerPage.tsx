@@ -157,7 +157,7 @@ export default function PrayerPage() {
               type="checkbox"
               checked={anonymous}
               onChange={(e) => setAnonymous(e.target.checked)}
-              className="accent-amber-600"
+              style={{ accentColor: 'var(--color-accent)' }}
             />
             <EyeOff size={14} /> Submit Anonymously
           </label>
