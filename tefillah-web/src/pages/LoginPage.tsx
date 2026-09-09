@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, Loader2, Lock, Mail } from 'lucide-react';
-import Logo from '../components/Logo';
+import AuthLayout from '../components/AuthLayout';
 import GoogleSignInButton from '../components/GoogleSignInButton';
 import AppleSignInButton from '../components/AppleSignInButton';
 import PasswordInput from '../components/PasswordInput';
@@ -30,16 +30,8 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="mx-auto max-w-md px-4 sm:px-6 py-12 sm:py-20">
-      <div className="text-center anim-fade-up">
-        <Logo size="md" />
-        <h1 className="font-serif text-3xl sm:text-4xl mt-6">Welcome Back</h1>
-        <p className="mt-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-          Sign in to continue your prayer journey
-        </p>
-      </div>
-
-      <form onSubmit={onSubmit} className="mt-8 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
+    <AuthLayout title="Welcome Back" subtitle="Sign in to continue your prayer journey">
+      <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">
         {error && (
           <div
             className="flex items-start gap-2 rounded-lg p-3 text-sm"
@@ -123,6 +115,6 @@ export default function LoginPage() {
           <Link to="/partner/login" className="btn-ghost text-sm">Sign In as a partner</Link>
         </div>
       </div>
-    </div>
+    </AuthLayout>
   );
 }
