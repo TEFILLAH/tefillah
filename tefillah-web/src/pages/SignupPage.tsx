@@ -68,7 +68,7 @@ export default function SignupPage() {
   const errorBlock = error || validation;
 
   return (
-    <AuthLayout title="Create Account" subtitle="Tell us about yourself">
+    <AuthLayout title="Create Account" subtitle="Tell us about yourself" width="xl">
 
       <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">
         {errorBlock && (

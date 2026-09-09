@@ -70,6 +70,7 @@ export default function PartnerSignupPage() {
     <AuthLayout
       title="Become a Prayer Partner"
       subtitle="Join our community and pray over the requests entrusted to you"
+      width="xl"
     >
 
       <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">

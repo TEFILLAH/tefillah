@@ -131,6 +131,7 @@ export default function CompleteProfilePage() {
           </p>
         ) : null
       }
+      width="xl"
     >
 
       <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">

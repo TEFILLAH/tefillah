@@ -32,6 +32,14 @@ export default function AuthLayout({
   eyebrow,
   /** Line UNDER the subtitle, e.g. "Signed in with Apple". */
   aside,
+  /**
+   * Column width. 'md' (448px) suits a single-column form such as login.
+   * 'xl' (576px) is for the pages whose forms use `sm:grid-cols-2` — signup,
+   * partner signup, complete-profile. Those were `max-w-xl` before this
+   * component existed, and forcing them to 'md' visibly cramped their paired
+   * inputs (Full Name | Email, Country | City).
+   */
+  width = 'md',
 }: {
   // ReactNode, not string: VerifyPage interpolates the address into its
   // subtitle and ForgotPasswordPage switches both on stage.
@@ -40,13 +48,16 @@ export default function AuthLayout({
   children: ReactNode;
   eyebrow?: ReactNode;
   aside?: ReactNode;
+  width?: 'md' | 'xl';
 }) {
   return (
     // 4rem = the sticky header height (h-16 in Header.tsx). Subtracting it keeps
     // the optical centre of the card in the centre of the space BELOW the header
     // rather than of the whole viewport, which would sit visibly low.
     <div className="lg:min-h-[calc(100vh-4rem)] lg:flex lg:items-center lg:justify-center">
-      <div className="mx-auto w-full max-w-md px-4 sm:px-6 py-12 sm:py-16 lg:py-10">
+      <div
+        className={`mx-auto w-full ${width === 'xl' ? 'max-w-xl' : 'max-w-md'} px-4 sm:px-6 py-12 sm:py-16 lg:py-10`}
+      >
         <div className="text-center anim-fade-up">
           <Logo size="md" />
           {eyebrow && <div className="mt-6">{eyebrow}</div>}
