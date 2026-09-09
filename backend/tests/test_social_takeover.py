@@ -122,9 +122,25 @@ async def run():
 
     # Firebase reports emailVerified as a real bool; Google/Apple may hand back
     # the STRING "false". Neither may be treated as verified.
-    for bad in (False, None, "", "false", 0):
+    #
+    # 1 and "1" are in here deliberately: `1 == True` in Python, so a careless
+    # equality check would accept them. The guard uses `is True` plus an
+    # explicit string compare, so an int never qualifies.
+    for bad in (False, None, "", "false", 0, 1, "1", "yes", "verified", [], {}):
         status, _ = await call_social(identity(verified=bad))
         check(f"email_verified={bad!r} is REFUSED", status == 401)
+
+    # The ACCEPTED side of the allow-list, pinned so nobody widens it by accident.
+    # Only real True and case/whitespace variants of the exact string "true".
+    # Nothing here is attacker-controlled: all three validators normalise this
+    # to a bool from a signed provider claim before the guard ever sees it.
+    for good in (True, "true", "TRUE", "  true  ", "True"):
+        reached = False
+        try:
+            await call_social(identity(verified=good))
+        except AssertionError as exc:
+            reached = "takeover" in str(exc)
+        check(f"email_verified={good!r} is ACCEPTED", reached)
 
     # ---- EMPTY EMAIL --------------------------------------------------------
     # Every emailless caller would otherwise collapse into ONE shared account:
