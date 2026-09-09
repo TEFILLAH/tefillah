@@ -8,7 +8,7 @@ export default function AppSettingsPage() {
   const { theme } = useThemeStore();
 
   return (
-    <div className="mx-auto max-w-2xl px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
+    <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
       <Link to="/menu" className="inline-flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
         <ArrowLeft size={14} /> Back to account
       </Link>

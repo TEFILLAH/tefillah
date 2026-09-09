@@ -19,7 +19,7 @@ export default function ConfirmationPage() {
   if (!data) return null;
 
   return (
-    <div className="mx-auto max-w-2xl px-4 sm:px-6 lg:px-8 py-12 sm:py-20">
+    <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-12 sm:py-20">
       <div className="text-center anim-fade-up">
         <div
           className="mx-auto w-16 h-16 rounded-full flex items-center justify-center"

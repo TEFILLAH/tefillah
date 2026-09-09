@@ -4,6 +4,10 @@ import { AlertCircle, ArrowLeft, CheckCircle2, Loader2, Lock } from 'lucide-reac
 import PasswordInput from '../components/PasswordInput';
 import { authAPI } from '../api/client';
 
+// NOTE: this page is not routed in App.tsx today. If it is wired up it belongs
+// on the SIGNED-IN surface (<Layout variant="app" />), not the auth surface —
+// hence max-w-3xl to match Profile/App Settings rather than AuthLayout, which is
+// for logged-out screens and drops the footer.
 export default function ChangePasswordPage() {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -39,7 +43,7 @@ export default function ChangePasswordPage() {
   };
 
   return (
-    <div className="mx-auto max-w-md px-4 sm:px-6 py-12 sm:py-16">
+    <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
       <Link to="/menu" className="inline-flex items-center gap-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
         <ArrowLeft size={14} /> Back to menu
       </Link>
