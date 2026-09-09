@@ -11,17 +11,35 @@
 export const GOOGLE_SIGNIN_ENABLED = true;
 
 /**
- * APPLE_SIGNIN_ENABLED — gates the Apple sign-in button on the web. Currently
- * OFF, because the Firebase console does NOT yet have the Apple provider
- * enabled: that needs an Apple Service ID (com.tefilah.app.web) plus a .p8
- * signing key, and until both exist every click fails with
- * auth/operation-not-allowed.
+ * APPLE_SIGNIN_ENABLED — gates the Apple sign-in button on the web.
  *
- * Shipping the button before then would put a prominent, brand-marked control
- * on the login page that CANNOT work — users click it, get told to go away,
- * and some of them bounce instead of signing up. Flip this to true in the same
- * change that enables the provider. Before flipping, also confirm the live
- * CloudFront CSP allows identitytoolkit.googleapis.com and
- * securetoken.googleapis.com, or the popup will fail for a different reason.
+ * Shipping this button before the whole chain works would put a prominent,
+ * brand-marked control on the login page that CANNOT work — users click it,
+ * get told to go away, and some bounce instead of signing up.
+ *
+ * As of 2026-09-08 the prerequisites are DONE and verified:
+ *   - Apple App ID + Service ID (com.tefilah.app.web) configured
+ *   - .p8 key D72A2BMF4H created, bound to KY52RZ3ZFK.com.tefilah.app
+ *   - Firebase Apple provider ENABLED
+ *   - tefillah.in + www.tefillah.in in Firebase authorised domains
+ *   - live CloudFront CSP allows identitytoolkit / securetoken and
+ *     frame-src tefillah-2283c.firebaseapp.com
+ *
+ * ONE THING IS STILL UNPROVEN — test it before trusting this in production.
+ * The backend now REFUSES any social token whose email the provider did not
+ * verify (that gap was an account-takeover hole: see the guard in
+ * social_auth). The web Apple flow reaches that guard as a *Firebase* ID
+ * token, so it only works if Firebase reports emailVerified=true for an Apple
+ * sign-in. That is the documented behaviour and Apple does verify its
+ * addresses, but it has not been exercised end to end here.
+ *
+ * So when you flip this: sign in with Apple on the deployed site once. If it
+ * returns 401, the backend log says exactly which provider was refused
+ * ("Social auth REFUSED: provider ... did not verify the email address") —
+ * that is this case, not a broken key. Fix it at the guard, not by weakening
+ * it for everyone.
+ *
+ * Mobile is unaffected either way: it verifies Apple tokens directly against
+ * Apple's JWKS and never goes through Firebase.
  */
 export const APPLE_SIGNIN_ENABLED = false;
