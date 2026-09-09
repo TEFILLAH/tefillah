@@ -25,21 +25,21 @@ export const GOOGLE_SIGNIN_ENABLED = true;
  *   - live CloudFront CSP allows identitytoolkit / securetoken and
  *     frame-src tefillah-2283c.firebaseapp.com
  *
- * ONE THING IS STILL UNPROVEN — test it before trusting this in production.
- * The backend now REFUSES any social token whose email the provider did not
- * verify (that gap was an account-takeover hole: see the guard in
+ * ENABLED 2026-09-09. ONE THING REMAINS UNPROVEN — watch it on the first real
+ * sign-in. The backend REFUSES any social token whose email the provider did
+ * not verify (that gap was an account-takeover hole: see the guard in
  * social_auth). The web Apple flow reaches that guard as a *Firebase* ID
  * token, so it only works if Firebase reports emailVerified=true for an Apple
  * sign-in. That is the documented behaviour and Apple does verify its
- * addresses, but it has not been exercised end to end here.
+ * addresses, but it has not been exercised end to end with a real Apple ID.
  *
- * So when you flip this: sign in with Apple on the deployed site once. If it
- * returns 401, the backend log says exactly which provider was refused
- * ("Social auth REFUSED: provider ... did not verify the email address") —
- * that is this case, not a broken key. Fix it at the guard, not by weakening
- * it for everyone.
+ * If a real sign-in returns 401, the backend log says exactly which provider
+ * was refused ("Social auth REFUSED: provider ... did not verify the email
+ * address") — that is THIS case, not a broken key or a bad .p8. Fix it at that
+ * provider path; do NOT weaken the guard for everyone, which would reopen the
+ * takeover. Setting this back to false is the safe instant rollback.
  *
  * Mobile is unaffected either way: it verifies Apple tokens directly against
  * Apple's JWKS and never goes through Firebase.
  */
-export const APPLE_SIGNIN_ENABLED = false;
+export const APPLE_SIGNIN_ENABLED = true;

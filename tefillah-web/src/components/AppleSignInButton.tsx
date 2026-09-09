@@ -92,12 +92,25 @@ export default function AppleSignInButton({ text = 'continue_with' }: { text?: G
   // Google pill came out visibly longer than a fixed-240 Apple pill. Measuring
   // the same way means both land on the same number from the same card, and
   // both go equally stale on a resize-without-reload.
+  // Measured with a ResizeObserver, NOT once at mount. A single useLayoutEffect
+  // reading clientWidth races the first layout pass: it captured 254px while
+  // the container settled at 282, and the button then sat visibly narrower than
+  // the Google one for the life of the page. GIS dodges that only by accident —
+  // it initialises asynchronously, after layout has settled.
+  //
+  // Observing also removes the old caveat that the two drifted apart on a
+  // resize-without-reload: this one now always matches its container.
   const boxRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState<number>(240);
   useLayoutEffect(() => {
-    if (boxRef.current) {
-      setWidth(Math.min(400, Math.max(240, boxRef.current.clientWidth || 320)));
-    }
+    const el = boxRef.current;
+    if (!el) return;
+    const measure = () =>
+      setWidth(Math.min(400, Math.max(240, el.clientWidth || 320)));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   return (
