@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, Building2, Loader2, Lock, Mail, MapPin, User } from 'lucide-react';
-import Logo from '../components/Logo';
+import AuthLayout from '../components/AuthLayout';
 import PasswordInput from '../components/PasswordInput';
 import CountrySelect from '../components/CountrySelect';
 import PhoneCodeInput from '../components/PhoneCodeInput';
@@ -67,16 +67,12 @@ export default function PartnerSignupPage() {
   const errorBlock = error || validation;
 
   return (
-    <div className="mx-auto max-w-xl px-4 sm:px-6 py-12 sm:py-16">
-      <div className="text-center anim-fade-up">
-        <Logo size="md" />
-        <h1 className="font-serif text-3xl sm:text-4xl mt-6">Become a Prayer Partner</h1>
-        <p className="mt-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-          Join our community and pray over the requests entrusted to you
-        </p>
-      </div>
+    <AuthLayout
+      title="Become a Prayer Partner"
+      subtitle="Join our community and pray over the requests entrusted to you"
+    >
 
-      <form onSubmit={onSubmit} className="mt-8 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
+      <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">
         {errorBlock && (
           <div
             className="flex items-start gap-2 rounded-lg p-3 text-sm"
@@ -212,7 +208,7 @@ export default function PartnerSignupPage() {
           </Link>
         </p>
       </form>
-    </div>
+    </AuthLayout>
   );
 }
 

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, CheckCircle2, Loader2, Lock, Mail, MailCheck } from 'lucide-react';
 import PasswordInput from '../components/PasswordInput';
-import Logo from '../components/Logo';
+import AuthLayout from '../components/AuthLayout';
 import { authAPI } from '../api/client';
 
 type Stage = 'request' | 'reset';
@@ -59,18 +59,14 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <div className="mx-auto max-w-md px-4 sm:px-6 py-12 sm:py-20">
-      <div className="text-center anim-fade-up">
-        <Logo size="md" />
-        <h1 className="font-serif text-3xl sm:text-4xl mt-6">
-          {stage === 'request' ? 'Reset your password' : 'Choose a new password'}
-        </h1>
-        <p className="mt-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-          {stage === 'request'
-            ? 'Enter your email and we will send you a 6-digit code.'
-            : 'Enter the code from your email along with your new password.'}
-        </p>
-      </div>
+    <AuthLayout
+      title={stage === 'request' ? 'Reset your password' : 'Choose a new password'}
+      subtitle={
+        stage === 'request'
+          ? 'Enter your email and we will send you a 6-digit code.'
+          : 'Enter the code from your email along with your new password.'
+      }
+    >
 
       {error && (
         <div
@@ -186,7 +182,7 @@ export default function ForgotPasswordPage() {
           Back to sign-in
         </Link>
       </p>
-    </div>
+    </AuthLayout>
   );
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, Loader2, MailCheck } from 'lucide-react';
-import Logo from '../components/Logo';
+import AuthLayout from '../components/AuthLayout';
 import { useAuthStore } from '../store/authStore';
 
 export default function VerifyPage() {
@@ -57,17 +57,17 @@ export default function VerifyPage() {
   };
 
   return (
-    <div className="mx-auto max-w-md px-4 sm:px-6 py-12 sm:py-20">
-      <div className="text-center anim-fade-up">
-        <Logo size="md" />
-        <h1 className="font-serif text-3xl sm:text-4xl mt-6">Verify Your Email</h1>
-        <p className="mt-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+    <AuthLayout
+      title="Verify Your Email"
+      subtitle={
+        <>
           We've sent a 6-digit code to{' '}
           <span style={{ color: 'var(--color-text)' }}>{email || 'your inbox'}</span>
-        </p>
-      </div>
+        </>
+      }
+    >
 
-      <form onSubmit={onSubmit} className="mt-8 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
+      <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">
         {error && (
           <div
             className="flex items-start gap-2 rounded-lg p-3 text-sm"
@@ -137,6 +137,6 @@ export default function VerifyPage() {
           </button>
         </div>
       </form>
-    </div>
+    </AuthLayout>
   );
 }

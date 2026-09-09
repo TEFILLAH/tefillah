@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, Loader2, Mail, MapPin, User } from 'lucide-react';
-import Logo from '../components/Logo';
+import AuthLayout from '../components/AuthLayout';
 import CountrySelect from '../components/CountrySelect';
 import PhoneCodeInput from '../components/PhoneCodeInput';
 import { countryByIso, DEFAULT_COUNTRY_ISO } from '../data/countries';
@@ -121,21 +121,19 @@ export default function CompleteProfilePage() {
   const errorBlock = submitError || validation;
 
   return (
-    <div className="mx-auto max-w-xl px-4 sm:px-6 py-12 sm:py-16">
-      <div className="text-center anim-fade-up">
-        <Logo size="md" />
-        <h1 className="font-serif text-3xl sm:text-4xl mt-6">Complete Your Profile</h1>
-        <p className="mt-2 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-          Your phone number and location connect you with prayer partners nearby.
-        </p>
-        {provider && (
-          <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+    <AuthLayout
+      title="Complete Your Profile"
+      subtitle="Your phone number and location connect you with prayer partners nearby."
+      aside={
+        provider ? (
+          <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
             Signed in with {provider === 'apple' ? 'Apple' : 'Google'}
           </p>
-        )}
-      </div>
+        ) : null
+      }
+    >
 
-      <form onSubmit={onSubmit} className="mt-8 surface-card p-6 sm:p-8 space-y-4 anim-fade-up delay-100">
+      <form onSubmit={onSubmit} className="surface-card p-6 sm:p-8 space-y-4">
         {errorBlock && (
           <div
             role="alert"
@@ -210,7 +208,7 @@ export default function CompleteProfilePage() {
           {isLoading ? <Loader2 size={18} className="animate-spin" /> : 'Complete Profile'}
         </button>
       </form>
-    </div>
+    </AuthLayout>
   );
 }
 
