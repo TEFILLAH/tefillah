@@ -133,6 +133,7 @@ export const authAPI = {
   socialAuth: async ({
     firebase_token,
     full_name,
+    apple_authorization_code,
   }: {
     firebase_token: string;
     /**
@@ -143,10 +144,18 @@ export const authAPI = {
      * already carries a verified name.
      */
     full_name?: string | null;
+    /**
+     * Apple only. Apple's one-time authorization code, which the backend
+     * exchanges for a refresh token so the account can be revoked at deletion
+     * (App Store 5.1.1(v)). Sent on every Apple sign-in — a fresh one is issued
+     * each time. Opaque credential material: never log or store it.
+     */
+    apple_authorization_code?: string | null;
   }) => {
     const res = await apiClient.post('/auth/social', {
       firebase_token,
       ...(full_name ? { full_name } : {}),
+      ...(apple_authorization_code ? { apple_authorization_code } : {}),
     });
     return res.data;
   },

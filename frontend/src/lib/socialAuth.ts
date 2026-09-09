@@ -12,6 +12,12 @@ export type SocialAuthMeta = {
   provider: 'google' | 'apple';
   /** Apple only, and only on the FIRST authorization. Null otherwise. */
   fullName?: string | null;
+  /**
+   * Apple only, but issued fresh on EVERY sign-in — always forward it so a
+   * failed earlier exchange gets another chance. Opaque credential material:
+   * never log, display, or persist it.
+   */
+  appleAuthorizationCode?: string | null;
 };
 
 /**
@@ -49,6 +55,7 @@ export async function handleSocialAuthFlow(
   const response = await authAPI.socialAuth({
     firebase_token: firebaseToken,
     full_name: meta.fullName ?? null,
+    apple_authorization_code: meta.appleAuthorizationCode ?? null,
   });
 
   // The backend has the name now, so the one-time Apple name can be dropped.

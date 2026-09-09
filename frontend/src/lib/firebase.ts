@@ -202,6 +202,14 @@ export type AppleSignInResult = {
    * subsequent sign-in, which is expected, not an error.
    */
   fullName: string | null;
+  /**
+   * Apple's one-time authorization code. The backend trades it for a refresh
+   * token so the account can be REVOKED at deletion (App Store 5.1.1(v)) —
+   * there is no second chance to get one. Unlike `fullName` a fresh code comes
+   * back on EVERY sign-in, so forward it every time and never cache it: it is
+   * single-use, expires in ~5 minutes, and must never be logged or stored.
+   */
+  authorizationCode: string | null;
 };
 
 /**
@@ -276,7 +284,11 @@ export const signInWithApple = async (): Promise<AppleSignInResult | null> => {
       // Persistence is a nicety; sign-in proceeds without it.
     }
 
-    return { identityToken: credential.identityToken, fullName };
+    return {
+      identityToken: credential.identityToken,
+      fullName,
+      authorizationCode: credential.authorizationCode ?? null,
+    };
   } catch (error: any) {
     // Apple signals a user-initiated cancel with this code; treat it like the
     // Google path does — silently, with no alert.

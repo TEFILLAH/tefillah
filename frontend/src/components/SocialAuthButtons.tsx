@@ -114,6 +114,7 @@ export const SocialAuthButtons: React.FC<SocialAuthButtonsProps> = ({
         onSocialAuth(result.identityToken, {
           provider: 'apple',
           fullName: result.fullName,
+          appleAuthorizationCode: result.authorizationCode,
         });
       }
     } catch (error: any) {

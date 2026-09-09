@@ -150,6 +150,7 @@ export default function LandingScreen() {
         await handleSocialAuthFlow(result.identityToken, router, {
           provider: 'apple',
           fullName: result.fullName,
+          appleAuthorizationCode: result.authorizationCode,
         });
       }
     } catch (error: any) {
